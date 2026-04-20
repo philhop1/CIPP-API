@@ -4,7 +4,7 @@ function New-ExoRequest {
     Internal
     #>
     [CmdletBinding(DefaultParameterSetName = 'ExoRequest')]
-    Param(
+    param(
         [Parameter(Mandatory = $true, ParameterSetName = 'ExoRequest')]
         [string]$cmdlet,
 
@@ -31,7 +31,7 @@ function New-ExoRequest {
         [Parameter(ParameterSetName = 'AvailableCmdlets')]
         [switch]$AvailableCmdlets,
 
-        $ModuleVersion = '3.7.1',
+        $ModuleVersion = '3.9.2',
         [switch]$AsApp
     )
     if ((Get-AuthorisedRequest -TenantID $tenantid) -or $NoAuthCheck -eq $True) {
@@ -43,7 +43,7 @@ function New-ExoRequest {
         $token = Get-GraphToken -Tenantid $tenantid -scope "$Resource/.default" -AsApp:$AsApp.IsPresent
 
         if ($cmdParams) {
-            #if cmdparams is a pscustomobject, convert to hashtable, otherwise leave as is
+            #if cmdParams is a pscustomobject, convert to hashtable, otherwise leave as is
             $Params = $cmdParams
         } else {
             $Params = @{}
@@ -54,9 +54,9 @@ function New-ExoRequest {
                 Parameters = $Params
             }
         }
-        $ExoBody = Get-CIPPTextReplacement -TenantFilter $tenantid -Text $ExoBody
+        $ExoBody = Get-CIPPTextReplacement -TenantFilter $tenantid -Text $ExoBody -EscapeForJson
 
-        $Tenant = Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $tenantid -or $_.customerId -eq $tenantid }
+        $Tenant = Get-Tenants -IncludeErrors | Where-Object { $_.defaultDomainName -eq $tenantid -or $_.customerId -eq $tenantid -or $_.initialDomainName -eq $tenantid } | Select-Object -First 1
         if (-not $Tenant -and $NoAuthCheck -eq $true) {
             $Tenant = [PSCustomObject]@{
                 customerId = $tenantid
@@ -70,7 +70,7 @@ function New-ExoRequest {
             if ($Compliance.IsPresent) {
                 $Anchor = "UPN:SystemMailbox{$MailboxGuid}@$($tenant.initialDomainName)"
             } else {
-                $anchor = "APP:SystemMailbox{$MailboxGuid}@$($tenant.customerId)"
+                $Anchor = "APP:SystemMailbox{$MailboxGuid}@$($tenant.customerId)"
             }
         }
         #if the anchor is a GUID, try looking up the user.
@@ -90,7 +90,7 @@ function New-ExoRequest {
         $Headers = @{
             Authorization     = $Token.Authorization
             Prefer            = 'odata.maxpagesize=1000'
-            'X-AnchorMailbox' = $anchor
+            'X-AnchorMailbox' = $Anchor
         }
 
         # Compliance API trickery. Capture Location headers on redirect, extract subdomain and prepend to compliance URL
@@ -129,7 +129,8 @@ function New-ExoRequest {
                 if ($Select) { $Select = "?`$select=$Select" }
                 $URL = "$Resource/adminapi/$ApiVersion/$($tenant.customerId)/InvokeCommand$Select"
 
-                Write-Verbose "POST [ $URL ]"
+                Write-Information "POST [ $URL ] | tenant: $tenantid | cmdlet: $cmdlet"
+                Write-Verbose "Request Body: $ExoBody"
                 $ReturnedData = do {
                     $ExoRequestParams = @{
                         Uri         = $URL
@@ -144,8 +145,8 @@ function New-ExoRequest {
                     $Return
                 } until ($null -eq $URL)
 
-                Write-Verbose ($ResponseHeaders | ConvertTo-Json)
-                if ($ReturnedData.'@adminapi.warnings' -and $ReturnedData.value -eq $null) {
+                Write-Verbose "Response Headers: $($ResponseHeaders | ConvertTo-Json -Depth 5 -Compress)"
+                if ($ReturnedData.'@adminapi.warnings' -and $null -eq $ReturnedData.value) {
                     $ReturnedData.value = $ReturnedData.'@adminapi.warnings'
                 }
             } catch {

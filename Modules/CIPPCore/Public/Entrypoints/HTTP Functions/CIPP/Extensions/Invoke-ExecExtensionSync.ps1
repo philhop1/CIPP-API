@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecExtensionSync {
     <#
     .FUNCTIONALITY
@@ -9,11 +7,6 @@ Function Invoke-ExecExtensionSync {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     switch ($Request.Query.Extension) {
         'Gradient' {
             try {
@@ -25,13 +18,8 @@ Function Invoke-ExecExtensionSync {
                     switch ($ConfigItem) {
                         'Gradient' {
                             If ($Configuration.Gradient.enabled -and $Configuration.Gradient.BillingEnabled) {
-                                $ProcessorQueue = Get-CIPPTable -TableName 'ProcessorQueue'
-                                $ProcessorFunction = [PSCustomObject]@{
-                                    PartitionKey = 'Function'
-                                    RowKey       = 'New-GradientServiceSyncRun'
-                                    FunctionName = 'New-GradientServiceSyncRun'
-                                }
-                                Add-AzDataTableEntity @ProcessorQueue -Entity $ProcessorFunction -Force
+                                # Queue the sync function for immediate execution
+                                Add-CippQueueMessage -Cmdlet 'New-GradientServiceSyncRun' -Parameters @{}
                                 $Results = [pscustomobject]@{'Results' = 'Successfully queued Gradient Sync' }
                             }
                         }
@@ -65,7 +53,7 @@ Function Invoke-ExecExtensionSync {
                             Batch            = @($Batch)
                         }
                         #Write-Host ($InputObject | ConvertTo-Json)
-                        $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+                        $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
 
                         $Results = [pscustomobject]@{'Results' = "NinjaOne Synchronization Queued for $($Tenant.IntegrationName)" }
                     } else {
@@ -82,7 +70,7 @@ Function Invoke-ExecExtensionSync {
                         Batch            = @($Batch)
                     }
                     #Write-Host ($InputObject | ConvertTo-Json)
-                    $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+                    $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
                     Write-Host "Started permissions orchestration with ID = '$InstanceId'"
                     $Results = [pscustomobject]@{'Results' = "NinjaOne Synchronization Queuing $(($TenantsToProcess | Measure-Object).count) Tenants" }
 
@@ -93,14 +81,14 @@ Function Invoke-ExecExtensionSync {
             }
         }
         'Hudu' {
-            Register-CIPPExtensionScheduledTasks -Reschedule
+            Register-CIPPExtensionScheduledTasks -Reschedule -Extensions 'Hudu'
             $Results = [pscustomobject]@{'Results' = 'Extension sync tasks have been rescheduled and will start within 15 minutes' }
         }
 
     }
 
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Results
         })

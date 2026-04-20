@@ -28,12 +28,21 @@ function Invoke-CIPPStandardMessageExpiration {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'MessageExpiration'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'MessageExpiration' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
-    $MessageExpiration = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-TransportConfig').messageExpiration
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $MessageExpiration = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-TransportConfig').messageExpiration
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the MessageExpiration state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     if ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
         if ($MessageExpiration -ne '12:00:00') {
             try {
                 New-ExoRequest -tenantid $Tenant -cmdlet 'Set-TransportConfig' -cmdParams @{MessageExpiration = '12:00:00' }
@@ -57,8 +66,13 @@ function Invoke-CIPPStandardMessageExpiration {
         }
     }
     if ($Settings.report -eq $true) {
-        if ($MessageExpiration -ne '12:00:00') { $MessageExpiration = $false } else { $MessageExpiration = $true }
-        Set-CIPPStandardsCompareField -FieldName 'standards.MessageExpiration' -FieldValue $MessageExpiration -TenantFilter $Tenant
+        $CurrentValue = @{
+            MessageExpiration = $MessageExpiration
+        }
+        $ExpectedValue = @{
+            MessageExpiration = '12:00:00'
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.MessageExpiration' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'messageExpiration' -FieldValue $MessageExpiration -StoreAs bool -Tenant $tenant
     }
 }

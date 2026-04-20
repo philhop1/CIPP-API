@@ -13,6 +13,8 @@ function Invoke-CIPPStandardSafeSendersDisable {
         CAT
             Exchange Standards
         TAG
+        EXECUTIVETEXT
+            Removes user-defined safe sender lists to prevent security bypasses where malicious emails could avoid spam filtering. This ensures all emails go through proper security screening, even if users have previously marked senders as 'safe', improving overall email security.
         ADDEDCOMPONENT
         DISABLEDFEATURES
             {"report":true,"warn":true,"remediate":false}
@@ -31,28 +33,32 @@ function Invoke-CIPPStandardSafeSendersDisable {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SafeSendersDisable' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
     if ($Settings.remediate -eq $true) {
         try {
             $Mailboxes = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-Mailbox' -select 'UserPrincipalName'
-            $Request = $Mailboxes | ForEach-Object {
+            $Request = foreach ($Mailbox in $Mailboxes) {
                 @{
                     CmdletInput = @{
                         CmdletName = 'Set-MailboxJunkEmailConfiguration'
                         Parameters = @{
-                            Identity                    = $_.UserPrincipalName
-                            TrustedRecipientsAndDomains = $null
+                            Identity                 = $Mailbox.UserPrincipalName
+                            TrustedSendersAndDomains = $null
                         }
                     }
                 }
             }
 
             $BatchResults = New-ExoBulkRequest -tenantid $tenant -cmdletArray @($Request)
-            $BatchResults | ForEach-Object {
-                if ($_.error) {
-                    $ErrorMessage = Get-NormalizedError -Message $_.error
-                    Write-Host "Failed to Disable SafeSenders for $($_.target). Error: $ErrorMessage"
-                    Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to Disable SafeSenders for $($_.target). Error: $ErrorMessage" -sev Error
+            foreach ($Result in $BatchResults) {
+                if ($Result.error) {
+                    $ErrorMessage = Get-NormalizedError -Message $Result.error
+                    Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to Disable SafeSenders for $($Result.target). Error: $ErrorMessage" -sev Error
                 }
             }
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Safe Senders disabled' -sev Info
@@ -60,6 +66,17 @@ function Invoke-CIPPStandardSafeSendersDisable {
             $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
             Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable SafeSenders. Error: $ErrorMessage" -sev Error
         }
+    }
+
+    if ($Settings.report -eq $true) {
+        #This script always returns true, as it only disables the Safe Senders list
+        $CurrentValue = @{
+            SafeSendersDisabled = $true
+        }
+        $ExpectedValue = @{
+            SafeSendersDisabled = $true
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.SafeSendersDisable' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 
 }

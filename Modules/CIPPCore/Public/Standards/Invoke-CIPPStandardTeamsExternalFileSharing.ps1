@@ -13,6 +13,9 @@ function Invoke-CIPPStandardTeamsExternalFileSharing {
         CAT
             Teams Standards
         TAG
+            "CIS M365 5.0 (8.4.1)"
+        EXECUTIVETEXT
+            Controls which external cloud storage services (like Google Drive, Dropbox, Box) employees can access through Teams, ensuring file sharing occurs only through approved and secure platforms. This helps maintain data governance while supporting necessary business integrations.
         ADDEDCOMPONENT
             {"type":"switch","name":"standards.TeamsExternalFileSharing.AllowGoogleDrive","label":"Allow Google Drive"}
             {"type":"switch","name":"standards.TeamsExternalFileSharing.AllowShareFile","label":"Allow ShareFile"}
@@ -34,9 +37,20 @@ function Invoke-CIPPStandardTeamsExternalFileSharing {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'TeamsExternalFileSharing'
-    Write-Host "TeamsExternalFileSharing: $($Settings | ConvertTo-Json)"
-    $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsTeamsClientConfiguration' | Select-Object AllowGoogleDrive, AllowShareFile, AllowBox, AllowDropBox, AllowEgnyte
+    $TestResult = Test-CIPPStandardLicense -StandardName 'TeamsExternalFileSharing' -TenantFilter $Tenant -RequiredCapabilities @('MCOSTANDARD', 'MCOEV', 'MCOIMP', 'TEAMS1', 'Teams_Room_Standard')
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentState = New-TeamsRequest -TenantFilter $Tenant -Cmdlet 'Get-CsTeamsClientConfiguration' |
+            Select-Object AllowGoogleDrive, AllowShareFile, AllowBox, AllowDropBox, AllowEgnyte
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the TeamsExternalFileSharing state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     $StateIsCorrect = ($CurrentState.AllowGoogleDrive -eq $Settings.AllowGoogleDrive ?? $false ) -and
     ($CurrentState.AllowShareFile -eq $Settings.AllowShareFile ?? $false ) -and
@@ -79,11 +93,20 @@ function Invoke-CIPPStandardTeamsExternalFileSharing {
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'TeamsExternalFileSharing' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
 
-        if ($StateIsCorrect -eq $true) {
-            $FieldValue = $true
-        } else {
-            $FieldValue = $CurrentState
+        $CurrentValue = @{
+            AllowGoogleDrive = $CurrentState.AllowGoogleDrive
+            AllowShareFile   = $CurrentState.AllowShareFile
+            AllowBox         = $CurrentState.AllowBox
+            AllowDropBox     = $CurrentState.AllowDropBox
+            AllowEgnyte      = $CurrentState.AllowEgnyte
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.TeamsExternalFileSharing' -FieldValue $FieldValue -Tenant $Tenant
+        $ExpectedValue = @{
+            AllowGoogleDrive = $Settings.AllowGoogleDrive
+            AllowShareFile   = $Settings.AllowShareFile
+            AllowBox         = $Settings.AllowBox
+            AllowDropBox     = $Settings.AllowDropBox
+            AllowEgnyte      = $Settings.AllowEgnyte
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.TeamsExternalFileSharing' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

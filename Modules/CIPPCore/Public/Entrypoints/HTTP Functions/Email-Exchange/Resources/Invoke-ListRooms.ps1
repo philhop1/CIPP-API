@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ListRooms {
+function Invoke-ListRooms {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,11 +7,6 @@ Function Invoke-ListRooms {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.tenantFilter
     $RoomId = $Request.Query.roomId
@@ -21,96 +14,92 @@ Function Invoke-ListRooms {
     # I dont like that i had to change it to EXO commands, but the waiting time for the Rooms to sync to Graph is too long :(  -Bobby
     try {
         if ($RoomId) {
-            # Get specific room mailbox
-            $RoomMailbox = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-Mailbox' -cmdParams @{
-                Identity             = $RoomId
-                RecipientTypeDetails = 'RoomMailbox'
-            } | Select-Object -ExcludeProperty *@odata.type*
+            # Batch mailbox, place, and calendar processing together
+            $BulkBatch = @(
+                @{ CmdletInput = @{ CmdletName = 'Get-Mailbox'; Parameters = @{ Identity = $RoomId; RecipientTypeDetails = 'RoomMailbox' } } }
+                @{ CmdletInput = @{ CmdletName = 'Get-Place'; Parameters = @{ Identity = $RoomId } } }
+                @{ CmdletInput = @{ CmdletName = 'Get-CalendarProcessing'; Parameters = @{ Identity = $RoomId } } }
+            )
+            $BulkResults = New-ExoBulkRequest -tenantid $TenantFilter -cmdletArray $BulkBatch -ReturnWithCommand $true
 
-            # Get place details
-            $PlaceDetails = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-Place' -cmdParams @{
-                Identity = $RoomId
-            } | Select-Object -ExcludeProperty *@odata.type*
+            $RoomMailbox = $BulkResults['Get-Mailbox'] | Select-Object -ExcludeProperty *@odata.type* | Select-Object -First 1
+            $PlaceDetails = $BulkResults['Get-Place'] | Select-Object -ExcludeProperty *@odata.type* | Select-Object -First 1
+            $CalendarProperties = $BulkResults['Get-CalendarProcessing'] | Select-Object -ExcludeProperty *@odata.type* | Select-Object -First 1
 
-            # Get calendar properties
-            $CalendarProperties = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-CalendarProcessing' -cmdParams @{
-                Identity = $RoomId
-            } | Select-Object -ExcludeProperty *@odata.type*
-
-            # Get calendar properties
-            $CalendarConfigurationProperties = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-MailboxCalendarConfiguration' -cmdParams @{
-                Identity = $RoomId
-            } | Select-Object -ExcludeProperty *@odata.type*
+            # Get-MailboxCalendarConfiguration requires anchor to the room mailbox
+            $CalendarConfigurationProperties = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-MailboxCalendarConfiguration' -cmdParams @{ Identity = $RoomId } -Anchor $RoomId | Select-Object -ExcludeProperty *@odata.type*
 
             if ($RoomMailbox -and $PlaceDetails -and $CalendarProperties -and $CalendarConfigurationProperties) {
                 $GraphRequest = @(
                     [PSCustomObject]@{
                         # Core Mailbox Properties
-                        id                            = $RoomMailbox.ExternalDirectoryObjectId
-                        displayName                   = $RoomMailbox.DisplayName
-                        mail                          = $RoomMailbox.PrimarySmtpAddress
-                        mailNickname                  = $RoomMailbox.Alias
-                        accountDisabled               = $RoomMailbox.AccountDisabled
-                        hiddenFromAddressListsEnabled = $RoomMailbox.HiddenFromAddressListsEnabled
-                        isDirSynced                   = $RoomMailbox.IsDirSynced
+                        id                             = $RoomMailbox.ExternalDirectoryObjectId
+                        displayName                    = $RoomMailbox.DisplayName
+                        mail                           = $RoomMailbox.PrimarySmtpAddress
+                        mailNickname                   = $RoomMailbox.Alias
+                        accountDisabled                = $RoomMailbox.AccountDisabled
+                        hiddenFromAddressListsEnabled  = $RoomMailbox.HiddenFromAddressListsEnabled
+                        isDirSynced                    = $RoomMailbox.IsDirSynced
 
                         # Room Booking Settings
-                        bookingType                   = $PlaceDetails.BookingType
-                        resourceDelegates             = $PlaceDetails.ResourceDelegates
-                        capacity                      = [int]($PlaceDetails.Capacity ?? $RoomMailbox.ResourceCapacity ?? 0)
+                        bookingType                    = $PlaceDetails.BookingType
+                        resourceDelegates              = $PlaceDetails.ResourceDelegates
+                        capacity                       = [int]($PlaceDetails.Capacity ?? $RoomMailbox.ResourceCapacity ?? 0)
 
                         # Location Information
-                        building                      = $PlaceDetails.Building
-                        floor                         = $PlaceDetails.Floor
-                        floorLabel                    = $PlaceDetails.FloorLabel
-                        street                        = if ([string]::IsNullOrWhiteSpace($PlaceDetails.Street)) { $null } else { $PlaceDetails.Street }
-                        city                          = if ([string]::IsNullOrWhiteSpace($PlaceDetails.City)) { $null } else { $PlaceDetails.City }
-                        state                         = if ([string]::IsNullOrWhiteSpace($PlaceDetails.State)) { $null } else { $PlaceDetails.State }
-                        postalCode                    = if ([string]::IsNullOrWhiteSpace($PlaceDetails.PostalCode)) { $null } else { $PlaceDetails.PostalCode }
-                        countryOrRegion               = if ([string]::IsNullOrWhiteSpace($PlaceDetails.CountryOrRegion)) { $null } else { $PlaceDetails.CountryOrRegion }
+                        building                       = $PlaceDetails.Building
+                        floor                          = $PlaceDetails.Floor
+                        floorLabel                     = $PlaceDetails.FloorLabel
+                        street                         = if ([string]::IsNullOrWhiteSpace($PlaceDetails.Street)) { $null } else { $PlaceDetails.Street }
+                        city                           = if ([string]::IsNullOrWhiteSpace($PlaceDetails.City)) { $null } else { $PlaceDetails.City }
+                        state                          = if ([string]::IsNullOrWhiteSpace($PlaceDetails.State)) { $null } else { $PlaceDetails.State }
+                        postalCode                     = if ([string]::IsNullOrWhiteSpace($PlaceDetails.PostalCode)) { $null } else { $PlaceDetails.PostalCode }
+                        countryOrRegion                = if ([string]::IsNullOrWhiteSpace($PlaceDetails.CountryOrRegion)) { $null } else { $PlaceDetails.CountryOrRegion }
 
                         # Room Equipment
-                        audioDeviceName               = $PlaceDetails.AudioDeviceName
-                        videoDeviceName               = $PlaceDetails.VideoDeviceName
-                        displayDeviceName             = $PlaceDetails.DisplayDeviceName
-                        mtrEnabled                    = $PlaceDetails.MTREnabled
+                        audioDeviceName                = $PlaceDetails.AudioDeviceName
+                        videoDeviceName                = $PlaceDetails.VideoDeviceName
+                        displayDeviceName              = $PlaceDetails.DisplayDeviceName
+                        mtrEnabled                     = $PlaceDetails.MTREnabled
 
                         # Room Features
-                        isWheelChairAccessible        = $PlaceDetails.IsWheelChairAccessible
-                        phone                         = if ([string]::IsNullOrWhiteSpace($PlaceDetails.Phone)) { $null } else { $PlaceDetails.Phone }
-                        tags                          = $PlaceDetails.Tags
-                        spaceType                     = $PlaceDetails.SpaceType
+                        isWheelChairAccessible         = $PlaceDetails.IsWheelChairAccessible
+                        phone                          = if ([string]::IsNullOrWhiteSpace($PlaceDetails.Phone)) { $null } else { $PlaceDetails.Phone }
+                        tags                           = $PlaceDetails.Tags
+                        spaceType                      = $PlaceDetails.SpaceType
 
                         # Calendar Properties
-                        AllowConflicts                = $CalendarProperties.AllowConflicts
-                        AllowRecurringMeetings        = $CalendarProperties.AllowRecurringMeetings
-                        BookingWindowInDays           = $CalendarProperties.BookingWindowInDays
-                        MaximumDurationInMinutes      = $CalendarProperties.MaximumDurationInMinutes
-                        ProcessExternalMeetingMessages= $CalendarProperties.ProcessExternalMeetingMessages
-                        EnforceCapacity               = $CalendarProperties.EnforceCapacity
-                        ForwardRequestsToDelegates    = $CalendarProperties.ForwardRequestsToDelegates
-                        ScheduleOnlyDuringWorkHours   = $CalendarProperties.ScheduleOnlyDuringWorkHours
-                        AutomateProcessing            = $CalendarProperties.AutomateProcessing
+                        AllowConflicts                 = $CalendarProperties.AllowConflicts
+                        AllowRecurringMeetings         = $CalendarProperties.AllowRecurringMeetings
+                        BookingWindowInDays            = $CalendarProperties.BookingWindowInDays
+                        MaximumDurationInMinutes       = $CalendarProperties.MaximumDurationInMinutes
+                        ProcessExternalMeetingMessages = $CalendarProperties.ProcessExternalMeetingMessages
+                        EnforceCapacity                = $CalendarProperties.EnforceCapacity
+                        ForwardRequestsToDelegates     = $CalendarProperties.ForwardRequestsToDelegates
+                        ScheduleOnlyDuringWorkHours    = $CalendarProperties.ScheduleOnlyDuringWorkHours
+                        AutomateProcessing             = $CalendarProperties.AutomateProcessing
+                        AddOrganizerToSubject          = $CalendarProperties.AddOrganizerToSubject
+                        DeleteSubject                  = $CalendarProperties.DeleteSubject
+                        RemoveCanceledMeetings         = $CalendarProperties.RemoveCanceledMeetings
 
                         # Calendar Configuration Properties
-                        WorkDays                      = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkDays)) { $null } else { $CalendarConfigurationProperties.WorkDays }
-                        WorkHoursStartTime            = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkHoursStartTime)) { $null } else { $CalendarConfigurationProperties.WorkHoursStartTime }
-                        WorkHoursEndTime              = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkHoursEndTime)) { $null } else { $CalendarConfigurationProperties.WorkHoursEndTime }
-                        WorkingHoursTimeZone          = $CalendarConfigurationProperties.WorkingHoursTimeZone
+                        WorkDays                       = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkDays)) { $null } else { $CalendarConfigurationProperties.WorkDays }
+                        WorkHoursStartTime             = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkHoursStartTime)) { $null } else { $CalendarConfigurationProperties.WorkHoursStartTime }
+                        WorkHoursEndTime               = if ([string]::IsNullOrWhiteSpace($CalendarConfigurationProperties.WorkHoursEndTime)) { $null } else { $CalendarConfigurationProperties.WorkHoursEndTime }
+                        WorkingHoursTimeZone           = $CalendarConfigurationProperties.WorkingHoursTimeZone
                     }
                 )
             }
         } else {
-            # Get all room mailboxes in one call
-            $RoomMailboxes = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-Mailbox' -cmdParams @{
-                RecipientTypeDetails = 'RoomMailbox'
-                ResultSize           = 'Unlimited'
-            } | Select-Object -ExcludeProperty *@odata.type*
+            # Batch Get-Mailbox and Get-Place into one request
+            $CmdletArray = @(
+                @{ CmdletInput = @{ CmdletName = 'Get-Mailbox'; Parameters = @{ RecipientTypeDetails = 'RoomMailbox'; ResultSize = 'Unlimited' } } }
+                @{ CmdletInput = @{ CmdletName = 'Get-Place'; Parameters = @{ ResultSize = 'Unlimited' } } }
+            )
+            $BulkResults = New-ExoBulkRequest -tenantid $TenantFilter -cmdletArray $CmdletArray -ReturnWithCommand $true
 
-            # Get all places in one call
-            $Places = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-Place' -cmdParams @{
-                ResultSize = 'Unlimited'
-            } | Select-Object -ExcludeProperty *@odata.type*
+            $RoomMailboxes = $BulkResults['Get-Mailbox'] | Select-Object -ExcludeProperty *@odata.type*
+            $Places = $BulkResults['Get-Place'] | Select-Object -ExcludeProperty *@odata.type*
 
             # Create hashtable for quick place lookups
             $PlacesLookup = @{}
@@ -173,8 +162,7 @@ Function Invoke-ListRooms {
         $GraphRequest = $ErrorMessage
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @($GraphRequest | Sort-Object displayName)
         })

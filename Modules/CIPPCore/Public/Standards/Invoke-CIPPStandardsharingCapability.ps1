@@ -13,7 +13,11 @@ function Invoke-CIPPStandardsharingCapability {
         CAT
             SharePoint Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (7.2.3)"
+            "CISA (MS.AAD.14.1v1)"
+            "CISA (MS.SPO.1.1v1)"
+        EXECUTIVETEXT
+            Defines the organization's default policy for sharing files and folders in SharePoint and OneDrive, balancing collaboration needs with security requirements. This fundamental setting determines whether employees can share with external users, anonymous links, or only internal colleagues.
         ADDEDCOMPONENT
             {"type":"autoComplete","multiple":false,"label":"Select Sharing Level","name":"standards.sharingCapability.Level","options":[{"label":"Users can share only with people in the organization. No external sharing is allowed.","value":"disabled"},{"label":"Users can share with new and existing guests. Guests must sign in or provide a verification code.","value":"externalUserSharingOnly"},{"label":"Users can share with anyone by using links that do not require sign-in.","value":"externalUserAndGuestSharing"},{"label":"Users can share with existing guests (those already in the directory of the organization).","value":"existingExternalUserSharingOnly"}]}
         IMPACT
@@ -32,8 +36,19 @@ function Invoke-CIPPStandardsharingCapability {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'sharingCapability' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'SHAREPOINTENTERPRISE_EDU', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
 
-    $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -tenantid $Tenant -AsApp $true
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/admin/sharepoint/settings' -tenantid $Tenant -AsApp $true
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the sharingCapability state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'sharingCapability' -FieldValue $CurrentInfo.sharingCapability -StoreAs string -Tenant $Tenant
@@ -51,10 +66,8 @@ function Invoke-CIPPStandardsharingCapability {
     if ($Settings.remediate -eq $true) {
 
         if ($CurrentInfo.sharingCapability -eq $level) {
-            Write-Host "Sharing level is already set to $level"
             Write-LogMessage -API 'Standards' -tenant $Tenant -message "Sharing level is already set to $level" -sev Info
         } else {
-            Write-Host "Setting sharing level to $level from $($CurrentInfo.sharingCapability)"
             try {
                 $body = @{
                     sharingCapability = $level
@@ -79,11 +92,12 @@ function Invoke-CIPPStandardsharingCapability {
     }
 
     if ($Settings.report -eq $true) {
-        if ($CurrentInfo.sharingCapability -eq $level) {
-            $FieldValue = $true
-        } else {
-            $FieldValue = $CurrentInfo | Select-Object -Property sharingCapability
+        $CurrentValue = @{
+            sharingCapability = $CurrentInfo.sharingCapability
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.sharingCapability' -FieldValue $FieldValue -Tenant $Tenant
+        $ExpectedValue = @{
+            sharingCapability = $level
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.sharingCapability' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListNotificationConfig {
     <#
     .FUNCTIONALITY
@@ -9,11 +7,6 @@ Function Invoke-ListNotificationConfig {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     $Table = Get-CIPPTable -TableName SchedulerConfig
     $Filter = "RowKey eq 'CippNotifications' and PartitionKey eq 'CippNotifications'"
     $Config = Get-CIPPAzDataTableEntity @Table -Filter $Filter
@@ -23,7 +16,7 @@ Function Invoke-ListNotificationConfig {
         $Config = @{}
     }
     #$config | Add-Member -NotePropertyValue @() -NotePropertyName 'logsToInclude' -Force
-    $config.logsToInclude = @(([pscustomobject]$config | Select-Object * -ExcludeProperty schedule, type, tenantid, onepertenant, sendtoIntegration, partitionkey, rowkey, tenant, ETag, email, logsToInclude, Severity, Alert, Info, Error, timestamp, webhook, includeTenantId).psobject.properties.name)
+    $config.logsToInclude = @(([pscustomobject]$config | Select-Object * -ExcludeProperty schedule, type, tenantid, onepertenant, sendtoIntegration, partitionkey, rowkey, tenant, ETag, email, logsToInclude, Severity, Alert, Info, Error, timestamp, webhook, includeTenantId, UseStandardizedSchema, webhookAuthType, webhookAuthToken, webhookAuthUsername, webhookAuthPassword, webhookAuthHeaderName, webhookAuthHeaderValue, webhookAuthHeaders).psobject.properties.name)
     if (!$config.logsToInclude) {
         $config.logsToInclude = @('None')
     }
@@ -34,10 +27,9 @@ Function Invoke-ListNotificationConfig {
     }
     $body = [PSCustomObject]$Config
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return [HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $body
-        })
+        }
 
 }

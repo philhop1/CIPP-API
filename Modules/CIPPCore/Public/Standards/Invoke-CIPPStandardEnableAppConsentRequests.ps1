@@ -13,7 +13,17 @@ function Invoke-CIPPStandardEnableAppConsentRequests {
         CAT
             Entra (AAD) Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (1.5.2)"
+            "CISA (MS.AAD.9.1v1)"
+            "EIDSCA.CP04"
+            "EIDSCA.CR01"
+            "EIDSCA.CR02"
+            "EIDSCA.CR03"
+            "EIDSCA.CR04"
+            "Essential 8 (1507)"
+            "NIST CSF 2.0 (PR.AA-05)"
+        EXECUTIVETEXT
+            Establishes a formal approval process where employees can request access to business applications that require administrative review. This balances security with productivity by allowing controlled access to necessary tools while preventing unauthorized application installations.
         ADDEDCOMPONENT
             {"type":"AdminRolesMultiSelect","label":"App Consent Reviewer Roles","name":"standards.EnableAppConsentRequests.ReviewerRoles"}
         IMPACT
@@ -31,11 +41,16 @@ function Invoke-CIPPStandardEnableAppConsentRequests {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'EnableAppConsentRequests'
 
-    $CurrentInfo = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/policies/adminConsentRequestPolicy' -tenantid $Tenant
+    try {
+        $CurrentInfo = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/policies/adminConsentRequestPolicy' -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the EnableAppConsentRequests state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         try {
             # Get current state
 
@@ -104,8 +119,22 @@ function Invoke-CIPPStandardEnableAppConsentRequests {
         }
     }
     if ($Settings.report -eq $true) {
-        $state = $CurrentInfo.isEnabled ? $true : $CurrentInfo
-        Set-CIPPStandardsCompareField -FieldName 'standards.EnableAppConsentRequests' -FieldValue $state -TenantFilter $Tenant
+        # Set default if no roles are selected, matches remediation logic
+        $RolesToAdd = $Settings.ReviewerRoles.value
+        if (!$RolesToAdd -or $RolesToAdd.Count -eq 0) {
+            $RolesToAdd = @('62e90394-69f5-4237-9190-012177145e10')
+        }
+
+        $CurrentValue = [PSCustomObject]@{
+            EnableAppConsentRequests = [bool]$CurrentInfo.isEnabled
+            ReviewerCount            = $CurrentInfo.reviewers.count
+        }
+        $ExpectedValue = [PSCustomObject]@{
+            EnableAppConsentRequests = $true
+            ReviewerCount            = $RolesToAdd.Count
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.EnableAppConsentRequests' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'EnableAppConsentAdminRequests' -FieldValue $CurrentInfo.isEnabled -StoreAs bool -Tenant $tenant
     }
 }

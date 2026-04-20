@@ -13,7 +13,13 @@ function Invoke-CIPPStandardDisableAppCreation {
         CAT
             Entra (AAD) Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (1.2.2)"
+            "CISA (MS.AAD.4.1v1)"
+            "EIDSCA.AP10"
+            "Essential 8 (1175)"
+            "NIST CSF 2.0 (PR.AA-05)"
+        EXECUTIVETEXT
+            Prevents regular employees from creating application registrations that could be used to maintain unauthorized access to company systems. This security measure ensures that only authorized IT personnel can create applications, reducing the risk of persistent security breaches through malicious applications.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -34,9 +40,20 @@ function Invoke-CIPPStandardDisableAppCreation {
     ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableAppCreation'
 
 
-    $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy?$select=defaultUserRolePermissions' -tenantid $Tenant
+    try {
+        $CurrentInfo = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authorizationPolicy/authorizationPolicy?$select=defaultUserRolePermissions' -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the DisableAppCreation state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
-    If ($Settings.remediate -eq $true) {
+    $CurrentValue = $CurrentInfo.defaultUserRolePermissions | Select-Object -Property allowedToCreateApps
+    $ExpectedValue = [PSCustomObject]@{
+        allowedToCreateApps = $false
+    }
+
+    if ($Settings.remediate -eq $true) {
         if ($CurrentInfo.defaultUserRolePermissions.allowedToCreateApps -eq $false) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are already not allowed to create App registrations.' -sev Info
         } else {
@@ -64,7 +81,7 @@ function Invoke-CIPPStandardDisableAppCreation {
 
     if ($Settings.report -eq $true) {
         $State = -not $CurrentInfo.defaultUserRolePermissions.allowedToCreateApps
-        Set-CIPPStandardsCompareField -FieldName 'standards.DisableAppCreation' -FieldValue $State -TenantFilter $Tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableAppCreation' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'UserAppCreationDisabled' -FieldValue $State -StoreAs bool -Tenant $tenant
     }
 }

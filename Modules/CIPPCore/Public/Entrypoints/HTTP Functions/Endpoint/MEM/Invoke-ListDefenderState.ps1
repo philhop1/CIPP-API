@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListDefenderState {
     <#
     .FUNCTIONALITY
@@ -9,26 +7,34 @@ Function Invoke-ListDefenderState {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
     $StatusCode = [HttpStatusCode]::OK
-
-
 
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.TenantFilter
+    $DeviceID = $Request.Query.DeviceID
+
     try {
-        $GraphRequest = New-GraphGetRequest -tenantid $TenantFilter -uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$expand=windowsProtectionState&`$select=id,deviceName,deviceType,operatingSystem,windowsProtectionState"
+        # If DeviceID is provided, get Defender state for that specific device
+        if ($DeviceID) {
+            $GraphRequest = New-GraphGetRequest -tenantid $TenantFilter -uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices/$($DeviceID)?`$expand=windowsProtectionState&`$select=id,deviceName,deviceType,operatingSystem,windowsProtectionState"
+        }
+        # If no DeviceID is provided, get Defender state for all devices
+        else {
+            $GraphRequest = New-GraphGetRequest -tenantid $TenantFilter -uri "https://graph.microsoft.com/beta/deviceManagement/managedDevices?`$expand=windowsProtectionState&`$select=id,deviceName,deviceType,operatingSystem,windowsProtectionState"
+        }
+
+        # Ensure we return an array even if single device
+        if ($GraphRequest -and -not ($GraphRequest -is [array])) {
+            $GraphRequest = @($GraphRequest)
+        }
+
         $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-        $StatusCode = [HttpStatusCode]::Forbidden
+        $StatusCode = [HttpStatusCode]::OK
         $GraphRequest = "$($ErrorMessage)"
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @($GraphRequest)
         })

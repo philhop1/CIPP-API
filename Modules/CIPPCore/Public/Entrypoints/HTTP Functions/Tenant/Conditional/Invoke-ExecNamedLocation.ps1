@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-ExecNamedLocation {
     <#
     .FUNCTIONALITY
@@ -12,29 +10,29 @@ function Invoke-ExecNamedLocation {
 
     $APIName = $Request.Params.CIPPEndpoint
     $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
 
-
+    # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Body.tenantFilter ?? $Request.Query.tenantFilter
-    $NamedLocationId = $Request.Body.NamedLocationId ?? $Request.Query.NamedLocationId
-    $change = $Request.Body.change ?? $Request.Query.change
-    $content = $Request.Body.input ?? $Request.Query.input
+    $NamedLocationId = $Request.Body.namedLocationId ?? $Request.Query.namedLocationId
+    $Change = $Request.Body.change ?? $Request.Query.change
+    $Content = $Request.Body.input ?? $Request.Query.input
+    #reintroduced because iut can come from autocomplete OR textinput.
+    if ($content.value) { $content = $content.value }
+
 
     try {
-        $results = Set-CIPPNamedLocation -NamedLocationId $NamedLocationId -TenantFilter $TenantFilter -change $change -content $content -Headers $Request.Headers
+        $Results = Set-CIPPNamedLocation -NamedLocationId $NamedLocationId -TenantFilter $TenantFilter -Change $Change -Content $Content -Headers $Headers
+        $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-CippException -Exception $_
-        Write-LogMessage -headers $Request.Headers -API $APIName -message "Failed to edit named location: $($ErrorMessage.NormalizedError)" -Sev 'Error' -tenant $TenantFilter -LogData $ErrorMessage
-        $results = "Failed to edit named location. Error: $($ErrorMessage.NormalizedError)"
+        Write-LogMessage -headers $Headers -API $APIName -message "Failed to edit named location: $($ErrorMessage.NormalizedError)" -Sev 'Error' -tenant $TenantFilter -LogData $ErrorMessage
+        $Results = "Failed to edit named location. Error: $($ErrorMessage.NormalizedError)"
+        $StatusCode = [HttpStatusCode]::InternalServerError
     }
 
-
-    $body = [pscustomobject]@{'Results' = @($results) }
-
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
-            Body       = $body
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
+            Body       = @{'Results' = @($Results) }
         })
 
 }

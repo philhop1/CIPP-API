@@ -14,15 +14,15 @@ function New-CIPPUserTask {
         $Results.Add("Username: $($CreationResults.Username)")
         $Results.Add("Password: $($CreationResults.Password)")
     } catch {
-        $Results.Add("Failed to create user. $($_.Exception.Message)" )
-        return @{'Results' = $Results }
+        $Results.Add("$($_.Exception.Message)" )
+        throw @{'Results' = $Results }
     }
 
     try {
         if ($UserObj.licenses.value) {
             if ($UserObj.sherwebLicense.value) {
-                $License = Set-SherwebSubscription -Headers $Headers -TenantFilter $UserObj.tenantFilter -SKU $UserObj.sherwebLicense.value -Add 1
-                $null = $results.Add('Added Sherweb License, scheduling assignment')
+                $null = Set-SherwebSubscription -Headers $Headers -TenantFilter $UserObj.tenantFilter -SKU $UserObj.sherwebLicense.value -Add 1
+                $null = $Results.Add('Added Sherweb License, scheduling assignment')
                 $taskObject = [PSCustomObject]@{
                     TenantFilter  = $UserObj.tenantFilter
                     Name          = "Assign License: $UserPrincipalName"
@@ -30,9 +30,9 @@ function New-CIPPUserTask {
                         value = 'Set-CIPPUserLicense'
                     }
                     Parameters    = [pscustomobject]@{
-                        userId      = $UserObj.id
+                        UserId      = $CreationResults.Username
                         APIName     = 'Sherweb License Assignment'
-                        AddLicenses = $licenses
+                        AddLicenses = $UserObj.licenses.value
                     }
                     ScheduledTime = 0 #right now, which is in the next 15 minutes and should cover most cases.
                     PostExecution = @{
@@ -54,7 +54,7 @@ function New-CIPPUserTask {
 
     try {
         if ($UserObj.AddedAliases) {
-            $AliasResults = Add-CIPPAlias -user $CreationResults.Username -Aliases ($UserObj.AddedAliases -split '\s') -UserprincipalName $CreationResults.Username -TenantFilter $UserObj.tenantFilter -APIName $APIName -Headers $Headers
+            $AliasResults = Add-CIPPAlias -User $CreationResults.Username -Aliases ($UserObj.AddedAliases -split '\s') -UserPrincipalName $CreationResults.Username -TenantFilter $UserObj.tenantFilter -APIName $APIName -Headers $Headers
             $Results.Add($AliasResults)
         }
     } catch {
@@ -68,13 +68,25 @@ function New-CIPPUserTask {
         $CopyFrom.Error | ForEach-Object { $Results.Add($_) }
     }
 
+    # Add to groups
+    if ($UserObj.AddToGroups) {
+        $UserObj.AddToGroups | ForEach-Object {
+            try {
+                $AddMemberResult = Add-CIPPGroupMember -Headers $Headers -GroupType $_.addedFields.groupType -GroupId $_.value -Member @($CreationResults.Username) -TenantFilter $UserObj.tenantFilter
+                $Results.Add($AddMemberResult)
+            } catch {
+                $Results.Add("Failed to add to group $($_.label): $_")
+            }
+        }
+    }
+
     if ($UserObj.setManager) {
-        $ManagerResult = Set-CIPPManager -user $CreationResults.Username -Manager $UserObj.setManager.value -TenantFilter $UserObj.tenantFilter -APIName 'Set Manager' -Headers $Headers
+        $ManagerResult = Set-CIPPManager -User $CreationResults.Username -Manager $UserObj.setManager.value -TenantFilter $UserObj.tenantFilter -Headers $Headers
         $Results.Add($ManagerResult)
     }
 
     if ($UserObj.setSponsor) {
-        $SponsorResult = Set-CIPPManager -user $CreationResults.Username -Manager $UserObj.setSponsor.value -TenantFilter $UserObj.tenantFilter -APIName 'Set Sponsor' -Headers $Headers
+        $SponsorResult = Set-CIPPSponsor -User $CreationResults.Username -Sponsor $UserObj.setSponsor.value -TenantFilter $UserObj.tenantFilter -Headers $Headers
         $Results.Add($SponsorResult)
     }
 
@@ -83,5 +95,6 @@ function New-CIPPUserTask {
         Username = $CreationResults.Username
         Password = $CreationResults.Password
         CopyFrom = $CopyFrom
+        User     = $CreationResults.User
     }
 }

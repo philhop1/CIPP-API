@@ -13,6 +13,9 @@ function Invoke-CIPPStandardSecurityDefaults {
         CAT
             Entra (AAD) Standards
         TAG
+            "CISA (MS.AAD.11.1v1)"
+        EXECUTIVETEXT
+            Activates Microsoft's baseline security configuration that requires multi-factor authentication and blocks legacy authentication methods. This provides essential security protection for organizations without complex conditional access policies, significantly improving security posture with minimal configuration.
         ADDEDCOMPONENT
         IMPACT
             High Impact
@@ -29,13 +32,18 @@ function Invoke-CIPPStandardSecurityDefaults {
 
     param($Tenant, $Settings)
 
-    $SecureDefaultsState = (New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/identitySecurityDefaultsEnforcementPolicy' -tenantid $tenant)
+    try {
+        $SecureDefaultsState = (New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/identitySecurityDefaultsEnforcementPolicy' -tenantid $tenant)
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the Security Defaults state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     if ($Settings.remediate -eq $true) {
 
         if ($SecureDefaultsState.IsEnabled -ne $true) {
             try {
-                Write-Host "Secure Defaults is disabled. Enabling for $tenant" -ForegroundColor Yellow
                 $body = '{ "isEnabled": true }'
                 $null = New-GraphPostRequest -tenantid $tenant -Uri 'https://graph.microsoft.com/beta/policies/identitySecurityDefaultsEnforcementPolicy' -Type patch -Body $body -ContentType 'application/json'
 
@@ -60,6 +68,12 @@ function Invoke-CIPPStandardSecurityDefaults {
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'SecurityDefaults' -FieldValue $SecureDefaultsState.IsEnabled -StoreAs bool -Tenant $tenant
-        Set-CIPPStandardsCompareField -FieldName 'standards.SecurityDefaults' -FieldValue $SecureDefaultsState.IsEnabled -Tenant $tenant
+        $CurrentData = @{
+            SecurityDefaultsEnabled = $SecureDefaultsState.IsEnabled
+        }
+        $ExpectedData = @{
+            SecurityDefaultsEnabled = $true
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.SecurityDefaults' -CurrentValue $CurrentData -ExpectedValue $ExpectedData -Tenant $tenant
     }
 }

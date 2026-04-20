@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-EditRoomMailbox {
     <#
     .FUNCTIONALITY
@@ -10,13 +8,12 @@ Function Invoke-EditRoomMailbox {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
-    $APIName = $TriggerMetadata.FunctionName
-    $Tenant = $Request.body.tenantid
-    Write-LogMessage -headers $Request.Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Tenant = $Request.Body.tenantID
 
 
     $Results = [System.Collections.Generic.List[Object]]::new()
-    $MailboxObject = $Request.body
+    $MailboxObject = $Request.Body
 
     # First update the mailbox properties
     $UpdateMailboxParams = @{
@@ -62,7 +59,8 @@ Function Invoke-EditRoomMailbox {
     $CalendarProperties = @(
         'AllowConflicts', 'AllowRecurringMeetings', 'BookingWindowInDays',
         'MaximumDurationInMinutes', 'ProcessExternalMeetingMessages', 'EnforceCapacity',
-        'ForwardRequestsToDelegates', 'ScheduleOnlyDuringWorkHours ', 'AutomateProcessing'
+        'ForwardRequestsToDelegates', 'ScheduleOnlyDuringWorkHours ', 'AutomateProcessing',
+        'AddOrganizerToSubject', 'DeleteSubject', 'RemoveCanceledMeetings'
     )
 
     foreach ($prop in $CalendarProperties) {
@@ -87,19 +85,17 @@ Function Invoke-EditRoomMailbox {
     }
 
     try {
-        # Update mailbox properties
-        $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-Mailbox' -cmdParams $UpdateMailboxParams
+        # Batch mailbox, place, and calendar processing together
+        $BulkBatch = @(
+            @{ CmdletInput = @{ CmdletName = 'Set-Mailbox'; Parameters = $UpdateMailboxParams } }
+            @{ CmdletInput = @{ CmdletName = 'Set-Place'; Parameters = $UpdatePlaceParams } }
+            @{ CmdletInput = @{ CmdletName = 'Set-CalendarProcessing'; Parameters = $UpdateCalendarParams } }
+        )
+        $null = New-ExoBulkRequest -tenantid $Tenant -cmdletArray $BulkBatch
+        $Results.Add("Successfully updated room: $($MailboxObject.DisplayName) (Mailbox, Place & Calendar Properties)")
 
-        # Update place properties
-        $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-Place' -cmdParams $UpdatePlaceParams
-        $Results.Add("Successfully updated room: $($MailboxObject.DisplayName) (Place Properties)")
-
-        # Update calendar properties
-        $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-CalendarProcessing' -cmdParams $UpdateCalendarParams
-        $Results.Add("Successfully updated room: $($MailboxObject.DisplayName) (Calendar Properties)")
-
-        # Update calendar configuration properties
-        $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-MailboxCalendarConfiguration' -cmdParams $UpdateCalendarConfigParams
+        # Set-MailboxCalendarConfiguration requires anchor to the room mailbox
+        $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-MailboxCalendarConfiguration' -cmdParams $UpdateCalendarConfigParams -Anchor $MailboxObject.roomId
         $Results.Add("Successfully updated room: $($MailboxObject.DisplayName) (Calendar Configuration)")
 
         Write-LogMessage -headers $Request.Headers -API $APIName -tenant $Tenant -message "Updated room $($MailboxObject.DisplayName)" -Sev 'Info'
@@ -115,8 +111,7 @@ Function Invoke-EditRoomMailbox {
 
     $Body = [pscustomobject]@{ 'Results' = @($Results) }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $Body
         })

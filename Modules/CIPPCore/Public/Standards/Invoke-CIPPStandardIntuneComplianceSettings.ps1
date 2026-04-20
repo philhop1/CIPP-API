@@ -13,6 +13,8 @@ function Invoke-CIPPStandardIntuneComplianceSettings {
         CAT
             Intune Standards
         TAG
+        EXECUTIVETEXT
+            Configures how the system treats devices that don't have specific compliance policies and sets how often devices must check in to maintain their compliance status. This ensures proper security oversight of all corporate devices and maintains current compliance information.
         ADDEDCOMPONENT
             {"type":"autoComplete","required":true,"multiple":false,"creatable":false,"name":"standards.IntuneComplianceSettings.secureByDefault","label":"Mark devices with no compliance policy as","options":[{"label":"Compliant","value":"false"},{"label":"Non-Compliant","value":"true"}]}
             {"type":"number","name":"standards.IntuneComplianceSettings.deviceComplianceCheckinThresholdDays","label":"Compliance status validity period (days)"}
@@ -30,8 +32,20 @@ function Invoke-CIPPStandardIntuneComplianceSettings {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'IntuneComplianceSettings' -TenantFilter $Tenant -RequiredCapabilities @('INTUNE_A', 'MDM_Services', 'EMS', 'SCCM', 'MICROSOFTINTUNEPLAN1')
 
-    $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/deviceManagement/settings' -tenantid $Tenant | Select-Object secureByDefault, deviceComplianceCheckinThresholdDays
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/deviceManagement/settings' -tenantid $Tenant |
+            Select-Object secureByDefault, deviceComplianceCheckinThresholdDays
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the intuneDeviceReg state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     if ($null -eq $Settings.deviceComplianceCheckinThresholdDays) { $Settings.deviceComplianceCheckinThresholdDays = $CurrentState.deviceComplianceCheckinThresholdDays }
     $SecureByDefault = [bool]($Settings.secureByDefault.value ? $Settings.secureByDefault.value : $Settings.secureByDefault)
@@ -77,8 +91,16 @@ function Invoke-CIPPStandardIntuneComplianceSettings {
     }
 
     if ($Settings.report -eq $true) {
-        $state = $StateIsCorrect ? $true : $CurrentState
-        Set-CIPPStandardsCompareField -FieldName 'standards.IntuneComplianceSettings' -FieldValue $state -Tenant $Tenant
+        $CurrentValue = @{
+            secureByDefault                      = $CurrentState.secureByDefault
+            deviceComplianceCheckinThresholdDays = $CurrentState.deviceComplianceCheckinThresholdDays
+        }
+        $ExpectedValue = @{
+            secureByDefault                      = $SecureByDefault
+            deviceComplianceCheckinThresholdDays = $DeviceComplianceCheckinThresholdDays
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.IntuneComplianceSettings' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'IntuneComplianceSettings' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
     }
 }

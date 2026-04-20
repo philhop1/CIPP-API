@@ -21,9 +21,37 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
     $TenantsTable = Get-CippTable -tablename 'Tenants'
     $Filter = "PartitionKey eq 'Tenants' and delegatedPrivilegeStatus eq 'directTenant'"
     $ClientType = Get-CIPPAzDataTableEntity @TenantsTable -Filter $Filter | Where-Object { $_.customerId -eq $tenantid -or $_.defaultDomainName -eq $tenantid }
-    if ($clientType.delegatedPrivilegeStatus -eq 'directTenant') {
+    if ($tenantid -ne $env:TenantID -and $clientType.delegatedPrivilegeStatus -eq 'directTenant') {
         Write-Host "Using direct tenant refresh token for $($clientType.customerId)"
         $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+
+        if ($null -eq $ClientRefreshToken) {
+            # Lazy load the refresh token from Key Vault only when needed
+            Write-Host "Fetching refresh token for direct tenant $($clientType.customerId) from Key Vault"
+            try {
+                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
+                    # Development environment - get from table storage
+                    $Table = Get-CIPPTable -tablename 'DevSecrets'
+                    $Secret = Get-AzDataTableEntity @Table -Filter "PartitionKey eq 'Secret' and RowKey eq 'Secret'"
+                    $secretname = $clientType.customerId -replace '-', '_'
+                    if ($Secret.$secretname) {
+                        Set-Item -Path "env:\$($clientType.customerId)" -Value $Secret.$secretname -Force
+                        $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+                    }
+                } else {
+                    # Production environment - get from Key Vault
+                    $keyvaultname = ($env:WEBSITE_DEPLOYMENT_ID -split '-')[0]
+                    $secret = Get-CippKeyVaultSecret -VaultName $keyvaultname -Name $clientType.customerId -AsPlainText -ErrorAction Stop
+                    if ($secret) {
+                        Set-Item -Path "env:\$($clientType.customerId)" -Value $secret -Force
+                        $ClientRefreshToken = Get-Item -Path "env:\$($clientType.customerId)" -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {
+                Write-Host "Failed to retrieve refresh token for direct tenant $($clientType.customerId): $($_.Exception.Message)"
+            }
+        }
+
         $refreshToken = $ClientRefreshToken.Value
     }
 
@@ -95,10 +123,14 @@ function Get-GraphToken($tenantid, $scope, $AsApp, $AppID, $AppSecret, $refreshT
             }
         }
         $Tenant.LastGraphError = if ( $_.ErrorDetails.Message) {
-            $msg = $_.ErrorDetails.Message | ConvertFrom-Json
-            "$($msg.error):$($msg.error_description)"
+            if (Test-Json $_.ErrorDetails.Message -ErrorAction SilentlyContinue) {
+                $msg = $_.ErrorDetails.Message | ConvertFrom-Json
+                "$($msg.error):$($msg.error_description)"
+            } else {
+                "$($_.ErrorDetails.Message)"
+            }
         } else {
-            $_.Exception.message
+            $_.Exception.Message
         }
         $Tenant.GraphErrorCount++
 

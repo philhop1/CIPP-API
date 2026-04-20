@@ -7,11 +7,6 @@ function Invoke-ListCustomRole {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     $DefaultRoles = @('readonly', 'editor', 'admin', 'superadmin')
     $Table = Get-CippTable -tablename 'CustomRoles'
     $CustomRoles = Get-CIPPAzDataTableEntity @Table
@@ -19,11 +14,25 @@ function Invoke-ListCustomRole {
     $AccessRoleGroupTable = Get-CippTable -tablename 'AccessRoleGroups'
     $RoleGroups = Get-CIPPAzDataTableEntity @AccessRoleGroupTable
 
+    $AccessIPRangeTable = Get-CippTable -tablename 'AccessIPRanges'
+    $AccessIPRanges = Get-CIPPAzDataTableEntity @AccessIPRangeTable
+
     $TenantList = Get-Tenants -IncludeErrors
 
     $RoleList = [System.Collections.Generic.List[pscustomobject]]::new()
     foreach ($Role in $DefaultRoles) {
         $RoleGroup = $RoleGroups | Where-Object -Property RowKey -EQ $Role
+
+        $IPRangeEntity = $AccessIPRanges | Where-Object -Property RowKey -EQ $Role
+        if ($IPRangeEntity) {
+            try {
+                $IPRanges = @($IPRangeEntity.IPRanges | ConvertFrom-Json)
+            } catch {
+                $IPRanges = @()
+            }
+        } else {
+            $IPRanges = @()
+        }
 
         $RoleList.Add([pscustomobject]@{
                 RoleName       = $Role
@@ -33,6 +42,7 @@ function Invoke-ListCustomRole {
                 BlockedTenants = @()
                 EntraGroup     = $RoleGroup.GroupName ?? $null
                 EntraGroupId   = $RoleGroup.GroupId ?? $null
+                IPRange        = $IPRanges
             })
     }
     foreach ($Role in $CustomRoles) {
@@ -49,9 +59,31 @@ function Invoke-ListCustomRole {
         if ($Role.AllowedTenants) {
             try {
                 $AllowedTenants = $Role.AllowedTenants | ConvertFrom-Json -ErrorAction Stop | ForEach-Object {
-                    $TenantId = $_
-                    $TenantList | Where-Object { $_.customerId -eq $TenantId } | Select-Object -ExpandProperty defaultDomainName
-                }
+                    if ($_ -is [PSCustomObject] -and $_.type -eq 'Group') {
+                        # Return group objects as-is for frontend display
+                        [PSCustomObject]@{
+                            type  = 'Group'
+                            value = $_.value
+                            label = $_.label
+                        }
+                    } else {
+                        # Convert tenant customer ID to domain name object for frontend
+                        $TenantId = $_
+                        $TenantInfo = $TenantList | Where-Object { $_.customerId -eq $TenantId }
+                        if ($TenantInfo) {
+                            [PSCustomObject]@{
+                                type        = 'Tenant'
+                                value       = $TenantInfo.defaultDomainName
+                                label       = "$($TenantInfo.displayName) ($($TenantInfo.defaultDomainName))"
+                                addedFields = @{
+                                    defaultDomainName = $TenantInfo.defaultDomainName
+                                    displayName       = $TenantInfo.displayName
+                                    customerId        = $TenantInfo.customerId
+                                }
+                            }
+                        }
+                    }
+                } | Where-Object { $_ -ne $null }
                 $AllowedTenants = $AllowedTenants ?? @('AllTenants')
                 $Role.AllowedTenants = @($AllowedTenants)
             } catch {
@@ -63,9 +95,31 @@ function Invoke-ListCustomRole {
         if ($Role.BlockedTenants) {
             try {
                 $BlockedTenants = $Role.BlockedTenants | ConvertFrom-Json -ErrorAction Stop | ForEach-Object {
-                    $TenantId = $_
-                    $TenantList | Where-Object { $_.customerId -eq $TenantId } | Select-Object -ExpandProperty defaultDomainName
-                }
+                    if ($_ -is [PSCustomObject] -and $_.type -eq 'Group') {
+                        # Return group objects as-is for frontend display
+                        [PSCustomObject]@{
+                            type  = 'Group'
+                            value = $_.value
+                            label = $_.label
+                        }
+                    } else {
+                        # Convert tenant customer ID to domain name object for frontend
+                        $TenantId = $_
+                        $TenantInfo = $TenantList | Where-Object { $_.customerId -eq $TenantId }
+                        if ($TenantInfo) {
+                            [PSCustomObject]@{
+                                type        = 'Tenant'
+                                value       = $TenantInfo.defaultDomainName
+                                label       = "$($TenantInfo.displayName) ($($TenantInfo.defaultDomainName))"
+                                addedFields = @{
+                                    defaultDomainName = $TenantInfo.defaultDomainName
+                                    displayName       = $TenantInfo.displayName
+                                    customerId        = $TenantInfo.customerId
+                                }
+                            }
+                        }
+                    }
+                } | Where-Object { $_ -ne $null }
                 $BlockedTenants = $BlockedTenants ?? @()
                 $Role.BlockedTenants = @($BlockedTenants)
             } catch {
@@ -85,8 +139,9 @@ function Invoke-ListCustomRole {
     }
     $Body = @($RoleList)
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = ConvertTo-Json -InputObject $Body -Depth 5
         })
 }
+

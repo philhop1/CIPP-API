@@ -20,14 +20,23 @@ function Get-CIPPAlertEntraConnectSyncStatus {
             $LastPasswordSync = $ConnectSyncStatus.onPremisesLastPasswordSyncDateTime
             $SyncDateTime = $ConnectSyncStatus.onPremisesLastSyncDateTime
             # Get the older of the two sync times
-            $LastSync = if ($SyncDateTime -lt $LastPasswordSync) { $SyncDateTime } else { $LastPasswordSync }
+            $LastSync = if ($SyncDateTime -lt $LastPasswordSync) { $SyncDateTime; $Cause = 'DirectorySync' } else { $LastPasswordSync; $Cause = 'PasswordSync' }
 
             if ($LastSync -lt (Get-Date).AddHours(-$Hours).ToUniversalTime()) {
-                $AlertData = "Entra Connect Sync for $($TenantFilter) has not run for over $Hours hours. Last sync was at $($LastSync.ToString('o'))"
+
+                $AlertData = @{
+                    Message           = "Entra Connect $Cause for $($TenantFilter) has not run for over $Hours hours. Last sync was at $($LastSync.ToString('o'))"
+                    LastSync          = $LastSync
+                    Cause             = $Cause
+                    LastPasswordSync  = $LastPasswordSync
+                    LastDirectorySync = $SyncDateTime
+                    Tenant            = $TenantFilter
+                }
                 Write-AlertTrace -cmdletName $MyInvocation.MyCommand -tenantFilter $TenantFilter -data $AlertData
             }
         }
     } catch {
-        Write-AlertMessage -tenant $($TenantFilter) -message "Could not get Entra Connect Sync Status for $($TenantFilter): $(Get-NormalizedError -message $_.Exception.message)"
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -API 'Alerts' -tenant $TenantFilter -message "Could not get Entra Connect Sync Status for $($TenantFilter): $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
     }
 }

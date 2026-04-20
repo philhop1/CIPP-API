@@ -16,22 +16,35 @@ function New-CIPPUser {
         $UserPrincipalName = "$($UserObj.username)@$($UserObj.Domain ? $UserObj.Domain : $UserObj.PrimDomain.value)"
         Write-Host "Creating user $UserPrincipalName"
         Write-Host "tenant filter is $($UserObj.tenantFilter)"
+        $normalizedOtherMails = @(
+            @($UserObj.otherMails) | ForEach-Object {
+                if ($null -ne $_) {
+                    [string]$_ -split ','
+                }
+            } | ForEach-Object {
+                $_.Trim()
+            } | Where-Object {
+                -not [string]::IsNullOrWhiteSpace($_)
+            }
+        )
         $BodyToship = [pscustomobject] @{
             'givenName'         = $UserObj.givenName
             'surname'           = $UserObj.surname
             'accountEnabled'    = $true
             'displayName'       = $UserObj.displayName
-            'department'        = $UserObj.Department
-            'mailNickname'      = $UserObj.Username ? $UserObj.username : $UserObj.mailNickname
+            'department'        = $UserObj.department
+            'mailNickname'      = $UserObj.username ? $UserObj.username : $UserObj.mailNickname
             'userPrincipalName' = $UserPrincipalName
             'usageLocation'     = $UserObj.usageLocation.value ? $UserObj.usageLocation.value : $UserObj.usageLocation
-            'city'              = $UserObj.City
-            'country'           = $UserObj.Country
-            'jobtitle'          = $UserObj.Jobtitle
-            'mobilePhone'       = $UserObj.MobilePhone
+            'otherMails'        = $normalizedOtherMails
+            'jobTitle'          = $UserObj.jobTitle
+            'mobilePhone'       = $UserObj.mobilePhone
             'streetAddress'     = $UserObj.streetAddress
-            'postalCode'        = $UserObj.PostalCode
-            'companyName'       = $UserObj.CompanyName
+            'city'              = $UserObj.city
+            'state'             = $UserObj.state
+            'country'           = $UserObj.country
+            'postalCode'        = $UserObj.postalCode
+            'companyName'       = $UserObj.companyName
             'passwordProfile'   = @{
                 'forceChangePasswordNextSignIn' = [bool]$UserObj.MustChangePass
                 'password'                      = $password
@@ -44,6 +57,15 @@ function New-CIPPUser {
                 if (-not [string]::IsNullOrWhiteSpace($UserObj.defaultAttributes.$($_.Name).value)) {
                     Write-Host 'adding body to ship'
                     $BodyToShip | Add-Member -NotePropertyName $_.Name -NotePropertyValue $UserObj.defaultAttributes.$($_.Name).value -Force
+                }
+            }
+        }
+        if ($UserObj.customData) {
+            $UserObj.customData | Get-Member -MemberType NoteProperty | ForEach-Object {
+                Write-Host "Editing user and adding custom data $($_.Name) with value $($UserObj.customData.$($_.Name))"
+                if (-not [string]::IsNullOrWhiteSpace($UserObj.customData.$($_.Name))) {
+                    Write-Host 'adding custom data to body'
+                    $BodyToShip | Add-Member -NotePropertyName $_.Name -NotePropertyValue $UserObj.customData.$($_.Name) -Force
                 }
             }
         }
@@ -64,6 +86,7 @@ function New-CIPPUser {
             Results  = ('Created New User.')
             Username = $UserPrincipalName
             Password = $password
+            User     = $GraphRequest
         }
     } catch {
         $ErrorMessage = Get-CippException -Exception $_

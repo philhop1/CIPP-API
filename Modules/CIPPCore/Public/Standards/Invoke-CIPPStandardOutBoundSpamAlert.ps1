@@ -13,7 +13,7 @@ function Invoke-CIPPStandardOutBoundSpamAlert {
         CAT
             Exchange Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (2.1.6)"
         ADDEDCOMPONENT
             {"type":"textField","name":"standards.OutBoundSpamAlert.OutboundSpamContact","label":"Outbound spam contact"}
         IMPACT
@@ -31,8 +31,19 @@ function Invoke-CIPPStandardOutBoundSpamAlert {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'OutBoundSpamAlert' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
-    $CurrentInfo = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-HostedOutboundSpamFilterPolicy' -cmdParams @{ Identity = 'Default' } -useSystemMailbox $true
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $CurrentInfo = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-HostedOutboundSpamFilterPolicy' -cmdParams @{ Identity = 'Default' } -useSystemMailbox $true
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the OutBoundSpamAlert state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     if ($Settings.remediate -eq $true) {
 
@@ -63,11 +74,14 @@ function Invoke-CIPPStandardOutBoundSpamAlert {
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'OutboundSpamAlert' -FieldValue $CurrentInfo.NotifyOutboundSpam -StoreAs bool -Tenant $tenant
-        if ($CurrentInfo.NotifyOutboundSpam -ne $true -or $CurrentInfo.NotifyOutboundSpamRecipients -ne $settings.OutboundSpamContact) {
-            $ValueField = $CurrentInfo | Select-Object -Property NotifyOutboundSpamRecipients, NotifyOutboundSpam
-        } else {
-            $ValueField = $true
+        $CurrentValue = @{
+            NotifyOutboundSpam           = $CurrentInfo.NotifyOutboundSpam
+            NotifyOutboundSpamRecipients = ($CurrentInfo.NotifyOutboundSpamRecipients -join ', ')
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.OutBoundSpamAlert' -FieldValue $ValueField -Tenant $tenant
+        $ExpectedValue = @{
+            NotifyOutboundSpam           = $true
+            NotifyOutboundSpamRecipients = $settings.OutboundSpamContact
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.OutBoundSpamAlert' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $tenant
     }
 }

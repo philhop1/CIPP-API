@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListTransportRulesTemplates {
     <#
     .FUNCTIONALITY
@@ -9,10 +7,7 @@ Function Invoke-ListTransportRulesTemplates {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+    $NoJson = "$($Request.query.noJson)" -eq 'true'
     $Table = Get-CippTable -tablename 'templates'
 
     $Templates = Get-ChildItem 'Config\*.TransportRuleTemplate.json' | ForEach-Object {
@@ -32,16 +27,30 @@ Function Invoke-ListTransportRulesTemplates {
     $Filter = "PartitionKey eq 'TransportTemplate'"
     $Templates = (Get-CIPPAzDataTableEntity @Table -Filter $Filter) | ForEach-Object {
         $GUID = $_.RowKey
-        $data = $_.JSON | ConvertFrom-Json
-        $data | Add-Member -NotePropertyName 'GUID' -NotePropertyValue $GUID
-        $data
+        if ($NoJson) {
+            $TemplateName = $GUID
+            try {
+                $Parsed = $_.JSON | ConvertFrom-Json -ErrorAction Stop
+                if ($Parsed.name) {
+                    $TemplateName = $Parsed.name
+                }
+            } catch {}
+
+            [pscustomobject]@{
+                name = $TemplateName
+                GUID = $GUID
+            }
+        } else {
+            $data = $_.JSON | ConvertFrom-Json
+            $data | Add-Member -NotePropertyName 'GUID' -NotePropertyValue $GUID
+            $data
+        }
     }
 
-    if ($Request.query.ID) { $Templates = $Templates | Where-Object -Property RowKey -EQ $Request.query.id }
+    if ($Request.query.ID) { $Templates = $Templates | Where-Object -Property GUID -EQ $Request.query.id }
 
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($Templates)
         })

@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-AddGuest {
+function Invoke-AddGuest {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -12,50 +10,50 @@ Function Invoke-AddGuest {
 
     $APIName = $Request.Params.CIPPEndpoint
     $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+
 
     $TenantFilter = $Request.Body.tenantFilter
+    $DisplayName = -not [string]::IsNullOrWhiteSpace($Request.Body.displayName) ? $Request.Body.displayName : $null
+    $EmailAddress = -not [string]::IsNullOrWhiteSpace($Request.Body.mail) ? $Request.Body.mail : $null
+    $Message = -not [string]::IsNullOrWhiteSpace($Request.Body.message) ? $Request.Body.message : $null
+    $RedirectURL = -not [string]::IsNullOrWhiteSpace($Request.Body.redirectUri) ? $Request.Body.redirectUri : 'https://myapps.microsoft.com'
+    $SendInvite = [System.Convert]::ToBoolean($Request.Body.sendInvite) ?? $true
 
-    $Results = [System.Collections.ArrayList]@()
-    $UserObject = $Request.Body
+    Write-Information -MessageData "Received request to add guest with email $EmailAddress to tenant filter $TenantFilter with display name $DisplayName. SendInvite is set to $SendInvite. Redirect URL is $RedirectURL. Message is $Message"
+
     try {
-        if ($UserObject.RedirectURL) {
-            $BodyToship = [pscustomobject] @{
-                'InvitedUserDisplayName'  = $UserObject.DisplayName
-                'InvitedUserEmailAddress' = $($UserObject.mail)
-                'inviteRedirectUrl'       = $($UserObject.RedirectURL)
-                'sendInvitationMessage'   = [bool]$UserObject.SendInvite
-            }
-        } else {
-            $BodyToship = [pscustomobject] @{
-                'InvitedUserDisplayName'  = $UserObject.DisplayName
-                'InvitedUserEmailAddress' = $($UserObject.mail)
-                'sendInvitationMessage'   = [bool]$UserObject.SendInvite
-                'inviteRedirectUrl'       = 'https://myapps.microsoft.com'
-            }
+        $BodyToShip = [pscustomobject] @{
+            invitedUserDisplayName  = $DisplayName
+            invitedUserEmailAddress = $EmailAddress
+            inviteRedirectUrl       = $RedirectURL
+            sendInvitationMessage   = $SendInvite
         }
-        $bodyToShip = ConvertTo-Json -Depth 10 -InputObject $BodyToship -Compress
-        $null = New-GraphPostRequest -uri 'https://graph.microsoft.com/beta/invitations' -tenantid $TenantFilter -type POST -body $BodyToship -verbose
-        if ($UserObject.SendInvite -eq $true) {
-            $Results.Add('Invited Guest. Invite Email sent')
-            Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message "Invited Guest $($UserObject.DisplayName) with Email Invite " -Sev 'Info'
-        } else {
-            $Results.Add('Invited Guest. No Invite Email was sent')
-            Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message "Invited Guest $($UserObject.DisplayName) with no Email Invite " -Sev 'Info'
+
+        if (-not [string]::IsNullOrWhiteSpace($Message)) {
+            $BodyToShip | Add-Member -MemberType NoteProperty -Name 'invitedUserMessageInfo' -Value ([pscustomobject]@{
+                    customizedMessageBody = $Message
+                })
         }
+
+        $BodyToShipJson = ConvertTo-Json -Depth 5 -InputObject $BodyToShip
+        $null = New-GraphPostRequest -uri 'https://graph.microsoft.com/beta/invitations' -tenantid $TenantFilter -type POST -body $BodyToShipJson
+        if ($SendInvite -eq $true) {
+            $Result = "Invited Guest $($DisplayName) with Email Invite"
+        } else {
+            $Result = "Invited Guest $($DisplayName) with no Email Invite"
+        }
+        Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message $Result -Sev 'Info'
         $StatusCode = [HttpStatusCode]::OK
     } catch {
         $ErrorMessage = Get-CippException -Exception $_
         $Result = "Failed to Invite Guest. $($ErrorMessage.NormalizedError)"
         Write-LogMessage -headers $Headers -API $APIName -tenant $($TenantFilter) -message $Result -Sev 'Error' -LogData $ErrorMessage
-        $Results.Add($Result)
         $StatusCode = [HttpStatusCode]::BadRequest
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
-            Body       = @{Results = @($Results) }
+            Body       = @{ 'Results' = @($Result) }
         })
 
 }

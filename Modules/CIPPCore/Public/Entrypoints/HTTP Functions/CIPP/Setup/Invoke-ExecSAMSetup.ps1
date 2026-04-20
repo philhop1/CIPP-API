@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-ExecSAMSetup {
     <#
     .FUNCTIONALITY
@@ -13,22 +11,21 @@ function Invoke-ExecSAMSetup {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
+    return ([HttpResponseContext]@{
+            StatusCode = [HttpStatusCode]::OK
+            Body       = @{ message = 'This endpoint is no longer used. Please use the CreateSAMApp endpoint instead.' }
+        })
 
     if ($Request.Query.error) {
         Add-Type -AssemblyName System.Web
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 ContentType = 'text/html'
                 StatusCode  = [HttpStatusCode]::Forbidden
                 Body        = Get-normalizedError -Message [System.Web.HttpUtility]::UrlDecode($Request.Query.error_description)
             })
         exit
     }
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
-    if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true') {
+    if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
         $DevSecretsTable = Get-CIPPTable -tablename 'DevSecrets'
         $Secret = Get-CIPPAzDataTableEntity @DevSecretsTable -Filter "PartitionKey eq 'Secret' and RowKey eq 'Secret'"
         if (!$Secret) {
@@ -41,13 +38,6 @@ function Invoke-ExecSAMSetup {
                 'ApplicationSecret' = ''
             }
             Add-CIPPAzDataTableEntity @DevSecretsTable -Entity $Secret -Force
-        }
-    } else {
-        if ($env:MSI_SECRET) {
-            Disable-AzContextAutosave -Scope Process | Out-Null
-            $null = Connect-AzAccount -Identity
-            $SubscriptionId = $env:WEBSITE_OWNER_NAME -split '\+' | Select-Object -First 1
-            $null = Set-AzContext -SubscriptionId $SubscriptionId
         }
     }
     if (!$env:SetFromProfile) {
@@ -63,17 +53,17 @@ function Invoke-ExecSAMSetup {
         if ($Request.Query.count -lt 1 ) { $Results = 'No authentication code found. Please go back to the wizard.' }
 
         if ($Request.Body.setkeys) {
-            if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true') {
+            if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
                 if ($Request.Body.TenantId) { $Secret.TenantId = $Request.Body.tenantid }
                 if ($Request.Body.RefreshToken) { $Secret.RefreshToken = $Request.Body.RefreshToken }
                 if ($Request.Body.applicationid) { $Secret.ApplicationId = $Request.Body.ApplicationId }
                 if ($Request.Body.ApplicationSecret) { $Secret.ApplicationSecret = $Request.Body.ApplicationSecret }
                 Add-CIPPAzDataTableEntity @DevSecretsTable -Entity $Secret -Force
             } else {
-                if ($Request.Body.tenantid) { Set-AzKeyVaultSecret -VaultName $kv -Name 'tenantid' -SecretValue (ConvertTo-SecureString -String $Request.Body.tenantid -AsPlainText -Force) }
-                if ($Request.Body.RefreshToken) { Set-AzKeyVaultSecret -VaultName $kv -Name 'RefreshToken' -SecretValue (ConvertTo-SecureString -String $Request.Body.RefreshToken -AsPlainText -Force) }
-                if ($Request.Body.applicationid) { Set-AzKeyVaultSecret -VaultName $kv -Name 'applicationid' -SecretValue (ConvertTo-SecureString -String $Request.Body.applicationid -AsPlainText -Force) }
-                if ($Request.Body.applicationsecret) { Set-AzKeyVaultSecret -VaultName $kv -Name 'applicationsecret' -SecretValue (ConvertTo-SecureString -String $Request.Body.applicationsecret -AsPlainText -Force) }
+                if ($Request.Body.tenantid) { Set-CippKeyVaultSecret -VaultName $kv -Name 'tenantid' -SecretValue (ConvertTo-SecureString -String $Request.Body.tenantid -AsPlainText -Force) }
+                if ($Request.Body.RefreshToken) { Set-CippKeyVaultSecret -VaultName $kv -Name 'RefreshToken' -SecretValue (ConvertTo-SecureString -String $Request.Body.RefreshToken -AsPlainText -Force) }
+                if ($Request.Body.applicationid) { Set-CippKeyVaultSecret -VaultName $kv -Name 'applicationid' -SecretValue (ConvertTo-SecureString -String $Request.Body.applicationid -AsPlainText -Force) }
+                if ($Request.Body.applicationsecret) { Set-CippKeyVaultSecret -VaultName $kv -Name 'applicationsecret' -SecretValue (ConvertTo-SecureString -String $Request.Body.applicationsecret -AsPlainText -Force) }
             }
 
             $Results = @{ Results = 'The keys have been replaced. Please perform a permissions check.' }
@@ -86,20 +76,20 @@ function Invoke-ExecSAMSetup {
                 $AppID = $Rows.appid
                 if (!$AppID -or $AppID -eq 'NotStarted') { $appid = $env:ApplicationID }
                 $URL = ($Request.headers.'x-ms-original-url').split('?') | Select-Object -First 1
-                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true') {
+                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
                     $clientsecret = $Secret.ApplicationSecret
                 } else {
-                    $clientsecret = Get-AzKeyVaultSecret -VaultName $kv -Name 'ApplicationSecret' -AsPlainText
+                    $clientsecret = Get-CippKeyVaultSecret -VaultName $kv -Name 'ApplicationSecret' -AsPlainText
                 }
                 if (!$clientsecret) { $clientsecret = $env:ApplicationSecret }
                 Write-Information "client_id=$appid&scope=https://graph.microsoft.com/.default+offline_access+openid+profile&code=$($Request.Query.code)&grant_type=authorization_code&redirect_uri=$($url)&client_secret=$clientsecret" #-Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
                 $RefreshToken = Invoke-RestMethod -Method POST -Body "client_id=$appid&scope=https://graph.microsoft.com/.default+offline_access+openid+profile&code=$($Request.Query.code)&grant_type=authorization_code&redirect_uri=$($url)&client_secret=$clientsecret" -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -ContentType 'application/x-www-form-urlencoded'
 
-                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true') {
+                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
                     $Secret.RefreshToken = $RefreshToken.refresh_token
                     Add-CIPPAzDataTableEntity @DevSecretsTable -Entity $Secret -Force
                 } else {
-                    Set-AzKeyVaultSecret -VaultName $kv -Name 'RefreshToken' -SecretValue (ConvertTo-SecureString -String $RefreshToken.refresh_token -AsPlainText -Force)
+                    Set-CippKeyVaultSecret -VaultName $kv -Name 'RefreshToken' -SecretValue (ConvertTo-SecureString -String $RefreshToken.refresh_token -AsPlainText -Force)
                 }
 
                 $Results = 'Authentication is now complete. You may now close this window.'
@@ -152,7 +142,7 @@ function Invoke-ExecSAMSetup {
                 if ($PartnerSetup) {
                     #$app = Get-Content '.\Cache_SAMSetup\SAMManifest.json' | ConvertFrom-Json
                     $ModuleBase = Get-Module -Name CIPPCore | Select-Object -ExpandProperty ModuleBase
-                    $SamManifestFile = Get-Item (Join-Path $ModuleBase 'Public\SAMManifest.json')
+                    $SamManifestFile = Get-Item (Join-Path $ModuleBase 'lib\data\SAMManifest.json')
                     $app = Get-Content $SamManifestFile.FullName | ConvertFrom-Json
 
                     $App.web.redirectUris = @($App.web.redirectUris + $URL)
@@ -192,16 +182,16 @@ function Invoke-ExecSAMSetup {
                     } until ($attempt -gt 5)
                 }
                 $AppPassword = (Invoke-RestMethod "https://graph.microsoft.com/v1.0/applications/$($AppId.id)/addPassword" -Headers @{ authorization = "Bearer $($Token.access_token)" } -Method POST -Body '{"passwordCredential":{"displayName":"CIPPInstall"}}' -ContentType 'application/json').secretText
-                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true') {
+                if ($env:AzureWebJobsStorage -eq 'UseDevelopmentStorage=true' -or $env:NonLocalHostAzurite -eq 'true') {
                     $Secret.TenantId = $TenantId
                     $Secret.ApplicationId = $AppId.appId
                     $Secret.ApplicationSecret = $AppPassword
                     Add-CIPPAzDataTableEntity @DevSecretsTable -Entity $Secret -Force
                     Write-Information ($Secret | ConvertTo-Json -Depth 5)
                 } else {
-                    Set-AzKeyVaultSecret -VaultName $kv -Name 'tenantid' -SecretValue (ConvertTo-SecureString -String $TenantId -AsPlainText -Force)
-                    Set-AzKeyVaultSecret -VaultName $kv -Name 'applicationid' -SecretValue (ConvertTo-SecureString -String $Appid.appId -AsPlainText -Force)
-                    Set-AzKeyVaultSecret -VaultName $kv -Name 'applicationsecret' -SecretValue (ConvertTo-SecureString -String $AppPassword -AsPlainText -Force)
+                    Set-CippKeyVaultSecret -VaultName $kv -Name 'tenantid' -SecretValue (ConvertTo-SecureString -String $TenantId -AsPlainText -Force)
+                    Set-CippKeyVaultSecret -VaultName $kv -Name 'applicationid' -SecretValue (ConvertTo-SecureString -String $Appid.appId -AsPlainText -Force)
+                    Set-CippKeyVaultSecret -VaultName $kv -Name 'applicationsecret' -SecretValue (ConvertTo-SecureString -String $AppPassword -AsPlainText -Force)
                 }
                 $Results = @{'message' = 'Created application. Waiting 30 seconds for Azure propagation'; step = $step }
             } else {
@@ -239,8 +229,7 @@ function Invoke-ExecSAMSetup {
         $Results = [pscustomobject]@{'Results' = "Failed. $($_.InvocationInfo.ScriptLineNumber):  $($_.Exception.message)" ; step = $step }
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Results
         })

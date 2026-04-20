@@ -13,6 +13,15 @@ function Invoke-CIPPStandardEnableFIDO2 {
         CAT
             Entra (AAD) Standards
         TAG
+            "EIDSCA.AF01"
+            "EIDSCA.AF02"
+            "EIDSCA.AF03"
+            "EIDSCA.AF04"
+            "EIDSCA.AF05"
+            "EIDSCA.AF06"
+            "NIST CSF 2.0 (PR.AA-03)"
+        EXECUTIVETEXT
+            Enables support for hardware security keys (like YubiKey) that provide the highest level of authentication security. These physical devices prevent phishing attacks and credential theft, offering superior protection for high-value accounts and sensitive business operations.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -29,12 +38,17 @@ function Invoke-CIPPStandardEnableFIDO2 {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'EnableFIDO2'
 
-    $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authenticationmethodspolicy/authenticationMethodConfigurations/Fido2' -tenantid $Tenant
+    try {
+        $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/authenticationmethodspolicy/authenticationMethodConfigurations/Fido2' -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the EnableFIDO2 state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
     $StateIsCorrect = ($CurrentState.state -eq 'enabled')
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'FIDO2 Support is already enabled.' -sev Info
         } else {
@@ -49,14 +63,20 @@ function Invoke-CIPPStandardEnableFIDO2 {
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'FIDO2 Support is enabled' -sev Info
         } else {
-            Write-StandardsAlert -message "FIDO2 Support is not enabled" -object $CurrentState -tenant $tenant -standardName 'EnableFIDO2' -standardId $Settings.standardId
+            Write-StandardsAlert -message 'FIDO2 Support is not enabled' -object $CurrentState -tenant $tenant -standardName 'EnableFIDO2' -standardId $Settings.standardId
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'FIDO2 Support is not enabled' -sev Info
         }
     }
 
     if ($Settings.report -eq $true) {
         $state = $StateIsCorrect ? $true : $CurrentState
-        Set-CIPPStandardsCompareField -FieldName 'standards.EnableFIDO2' -FieldValue $state -TenantFilter $Tenant
+        $CurrentValue = [PSCustomObject]@{
+            EnableFIDO2 = $state
+        }
+        $ExpectedValue = [PSCustomObject]@{
+            EnableFIDO2 = $true
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.EnableFIDO2' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'EnableFIDO2' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $tenant
     }
 }

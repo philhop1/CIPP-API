@@ -13,6 +13,8 @@ function Invoke-CIPPStandardDisableViva {
         CAT
             Exchange Standards
         TAG
+        EXECUTIVETEXT
+            Disables daily Microsoft Viva Insights reports that are automatically sent to employees, reducing email volume and allowing organizations to control when and how productivity insights are shared. This can help prevent information overload while maintaining the ability to access insights when needed.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -28,7 +30,6 @@ function Invoke-CIPPStandardDisableViva {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableViva'
 
     try {
         # TODO This does not work without Global Admin permissions for some reason. Throws an "EXCEPTION: Tenant admin role is required" error. -Bobby
@@ -36,12 +37,10 @@ function Invoke-CIPPStandardDisableViva {
     } catch {
         $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
         Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to get Viva insights settings. Error: $ErrorMessage" -sev Error
-        Return
+        return
     }
 
-    If ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
-
+    if ($Settings.remediate -eq $true) {
         if ($CurrentSetting.isEnabledInOrganization -eq $false) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Viva is already disabled.' -sev Info
         } else {
@@ -66,8 +65,14 @@ function Invoke-CIPPStandardDisableViva {
     }
 
     if ($Settings.report -eq $true) {
-        $state = $CurrentSetting.isEnabledInOrganization ? $true : ($CurrentSetting | Select-Object isEnabledInOrganization)
-        Set-CIPPStandardsCompareField -FieldName 'standards.DisableViva' -FieldValue $State -Tenant $Tenant
+        $CurrentValue = [PSCustomObject]@{
+            DisableViva = -not $CurrentSetting.isEnabledInOrganization
+        }
+        $ExpectedValue = [PSCustomObject]@{
+            DisableViva = $true
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableViva' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'DisableViva' -FieldValue $CurrentSetting.isEnabledInOrganization -StoreAs bool -Tenant $Tenant
     }
 

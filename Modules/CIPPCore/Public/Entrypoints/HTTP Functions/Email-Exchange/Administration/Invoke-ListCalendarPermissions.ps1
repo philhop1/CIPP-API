@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ListCalendarPermissions {
     <#
     .FUNCTIONALITY
@@ -11,13 +9,37 @@ Function Invoke-ListCalendarPermissions {
     param($Request, $TriggerMetadata)
 
     $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     $UserID = $Request.Query.UserID
     $TenantFilter = $Request.Query.tenantFilter
+    $UseReportDB = $Request.Query.UseReportDB
+    $ByUser = $Request.Query.ByUser
 
     try {
+        # If UseReportDB is specified and no specific UserID, retrieve from report database
+        if ($UseReportDB -eq 'true' -and -not $UserID) {
+
+            # Call the report function with proper parameters
+            $ReportParams = @{
+                TenantFilter = $TenantFilter
+            }
+            if ($ByUser -eq 'true') {
+                $ReportParams.ByUser = $true
+            }
+            try {
+                $GraphRequest = Get-CIPPCalendarPermissionReport @ReportParams
+                $StatusCode = [HttpStatusCode]::OK
+            } catch {
+                $StatusCode = [HttpStatusCode]::InternalServerError
+                $GraphRequest = $_.Exception.Message
+            }
+
+            return ([HttpResponseContext]@{
+                    StatusCode = $StatusCode
+                    Body       = @($GraphRequest)
+                })
+        }
+
+        # Original live query logic for specific user
         $GetCalParam = @{Identity = $UserID; FolderScope = 'Calendar' }
         $CalendarFolder = New-ExoRequest -tenantid $TenantFilter -cmdlet 'Get-MailboxFolderStatistics' -anchor $UserID -cmdParams $GetCalParam | Select-Object -First 1 -ExcludeProperty *data.type*
         $CalParam = @{Identity = "$($UserID):\$($CalendarFolder.name)" }
@@ -32,8 +54,7 @@ Function Invoke-ListCalendarPermissions {
         $GraphRequest = $ErrorMessage
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @($GraphRequest)
         })

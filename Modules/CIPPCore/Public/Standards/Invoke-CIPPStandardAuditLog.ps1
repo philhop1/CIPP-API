@@ -13,8 +13,11 @@ function Invoke-CIPPStandardAuditLog {
         CAT
             Global Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (3.1.1)"
             "mip_search_auditlog"
+            "NIST CSF 2.0 (DE.CM-09)"
+        EXECUTIVETEXT
+            Activates comprehensive activity logging across Microsoft 365 services to track user actions, system changes, and security events. This provides essential audit trails for compliance requirements, security investigations, and regulatory reporting.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -32,14 +35,23 @@ function Invoke-CIPPStandardAuditLog {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'AuditLog' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
     ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'AuditLog'
 
-    Write-Host ($Settings | ConvertTo-Json)
     $AuditLogEnabled = [bool](New-ExoRequest -tenantid $Tenant -cmdlet 'Get-AdminAuditLogConfig' -Select UnifiedAuditLogIngestionEnabled).UnifiedAuditLogIngestionEnabled
 
-    If ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
+    $CurrentValue = [PSCustomObject]@{
+        UnifiedAuditLogIngestionEnabled = $AuditLogEnabled
+    }
+    $ExpectedValue = [PSCustomObject]@{
+        UnifiedAuditLogIngestionEnabled = $true
+    }
 
+    if ($Settings.remediate -eq $true) {
         $DehydratedTenant = (New-ExoRequest -tenantid $Tenant -cmdlet 'Get-OrganizationConfig' -Select IsDehydrated).IsDehydrated
         if ($DehydratedTenant -eq $true) {
             try {
@@ -60,8 +72,8 @@ function Invoke-CIPPStandardAuditLog {
             }
 
         } catch {
-            $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-            Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to apply Unified Audit Log. Error: $ErrorMessage" -sev Error
+            $ErrorMessage = Get-CippException -Exception $_
+            Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to apply Unified Audit Log. Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
         }
     }
     if ($Settings.alert -eq $true) {
@@ -76,7 +88,7 @@ function Invoke-CIPPStandardAuditLog {
 
     if ($Settings.report -eq $true) {
         $state = $AuditLogEnabled -eq $true ? $true : $AuditLogEnabled
-        Set-CIPPStandardsCompareField -FieldName 'standards.AuditLog' -FieldValue $state -TenantFilter $Tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.AuditLog' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'AuditLog' -FieldValue $AuditLogEnabled -StoreAs bool -Tenant $tenant
     }
 }

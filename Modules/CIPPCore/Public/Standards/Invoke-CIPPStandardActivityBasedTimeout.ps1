@@ -13,8 +13,11 @@ function Invoke-CIPPStandardActivityBasedTimeout {
         CAT
             Global Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (1.3.2)"
             "spo_idle_session_timeout"
+            "NIST CSF 2.0 (PR.AA-03)"
+        EXECUTIVETEXT
+            Automatically logs out inactive users from Microsoft 365 applications after a specified time period to prevent unauthorized access to company data on unattended devices. This security measure protects against data breaches when employees leave workstations unlocked.
         ADDEDCOMPONENT
             {"type":"autoComplete","multiple":false,"creatable":false,"label":"Select value","name":"standards.ActivityBasedTimeout.timeout","options":[{"label":"1 Hour","value":"01:00:00"},{"label":"3 Hours","value":"03:00:00"},{"label":"6 Hours","value":"06:00:00"},{"label":"12 Hours","value":"12:00:00"},{"label":"24 Hours","value":"1.00:00:00"}]}
         IMPACT
@@ -40,13 +43,21 @@ function Invoke-CIPPStandardActivityBasedTimeout {
     # Input validation
     if ([string]::IsNullOrWhiteSpace($timeout) -or $timeout -eq 'Select a value' ) {
         Write-LogMessage -API 'Standards' -tenant $Tenant -message 'ActivityBasedTimeout: Invalid timeout parameter set' -sev Error
-        Return
+        return
     }
 
-    $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/activityBasedTimeoutPolicies' -tenantid $Tenant
-    $StateIsCorrect = if ($CurrentState.definition -like "*$timeout*") { $true } else { $false }
+    try {
+        $CurrentState = New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/policies/activityBasedTimeoutPolicies' -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-CippException -Exception $_
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the ActivityBasedTimeout state for $Tenant. Error: $($ErrorMessage.NormalizedError)" -Sev Error -LogData $ErrorMessage
+        return
+    }
+    $CurrentValue = ($CurrentState.definition | ConvertFrom-Json -ErrorAction SilentlyContinue).activitybasedtimeoutpolicy.ApplicationPolicies | Select-Object -First 1 -Property WebSessionIdleTimeout
+    $StateIsCorrect = if ($CurrentValue.WebSessionIdleTimeout -eq $timeout) { $true } else { $false }
+    $ExpectedValue = [PSCustomObject]@{WebSessionIdleTimeout = $timeout }
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         try {
             if ($StateIsCorrect -eq $true) {
                 Write-LogMessage -API 'Standards' -tenant $Tenant -message "Activity Based Timeout is already enabled and set to $timeout" -sev Info
@@ -68,11 +79,12 @@ function Invoke-CIPPStandardActivityBasedTimeout {
                     $RequestType = 'PATCH'
                     $URI = "https://graph.microsoft.com/beta/policies/activityBasedTimeoutPolicies/$($CurrentState.id)"
                 }
-                New-GraphPostRequest -tenantid $Tenant -Uri $URI -Type $RequestType -Body $body -ContentType 'application/json'
+                New-GraphPostRequest -tenantid $Tenant -Uri $URI -Type $RequestType -Body $body
                 Write-LogMessage -API 'Standards' -tenant $Tenant -message "Enabled Activity Based Timeout with a value of $timeout" -sev Info
             }
         } catch {
-            Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to enable Activity Based Timeout a value of $timeout." -sev Error -LogData $_
+            $ErrorMessage = Get-CippException -Exception $_
+            Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to enable Activity Based Timeout a value of $timeout." -sev Error -LogData $ErrorMessage
         }
     }
 
@@ -87,7 +99,7 @@ function Invoke-CIPPStandardActivityBasedTimeout {
     }
 
     if ($Settings.report -eq $true) {
-        Set-CIPPStandardsCompareField -FieldName 'standards.ActivityBasedTimeout' -FieldValue $StateIsCorrect -TenantFilter $Tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.ActivityBasedTimeout' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'ActivityBasedTimeout' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
     }
 

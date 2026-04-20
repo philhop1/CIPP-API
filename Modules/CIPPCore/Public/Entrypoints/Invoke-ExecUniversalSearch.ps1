@@ -1,22 +1,12 @@
-using namespace System.Net
-
-Function Invoke-ExecUniversalSearch {
+function Invoke-ExecUniversalSearch {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         CIPP.Core.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
-
-
-
     # Interact with query parameters or the body of the request.
 
     try {
@@ -50,10 +40,9 @@ Function Invoke-ExecUniversalSearch {
         $StatusCode = [HttpStatusCode]::Forbidden
         $GraphRequest = "Could not connect to Azure Lighthouse API: $($ErrorMessage)"
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = $StatusCode
-            Body       = @($GraphRequest)
-        })
+    return [HttpResponseContext]@{
+        StatusCode = $StatusCode
+        Body       = @($GraphRequest)
+    }
 
 }

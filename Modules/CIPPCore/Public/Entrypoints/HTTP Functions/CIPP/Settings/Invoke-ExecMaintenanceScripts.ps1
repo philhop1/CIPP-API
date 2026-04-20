@@ -1,5 +1,3 @@
-using namespace System.Net
-
 Function Invoke-ExecMaintenanceScripts {
     <#
     .FUNCTIONALITY
@@ -11,8 +9,6 @@ Function Invoke-ExecMaintenanceScripts {
     param($Request, $TriggerMetadata)
 
     $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
     try {
         $GraphToken = Get-GraphToken -returnRefresh $true
         $AccessTokenDetails = Read-JwtAccessDetails -Token $GraphToken.access_token
@@ -21,7 +17,7 @@ Function Invoke-ExecMaintenanceScripts {
             '##TENANTID##'      = $env:TenantID
             '##RESOURCEGROUP##' = $env:WEBSITE_RESOURCE_GROUP
             '##FUNCTIONAPP##'   = $env:WEBSITE_SITE_NAME
-            '##SUBSCRIPTION##'  = (($env:WEBSITE_OWNER_NAME).split('+') | Select-Object -First 1)
+            '##SUBSCRIPTION##'  = Get-CIPPAzFunctionAppSubId
             '##TOKENIP##'       = $AccessTokenDetails.IPAddress
         }
     } catch { Write-Host $_.Exception.Message }
@@ -72,8 +68,7 @@ Function Invoke-ExecMaintenanceScripts {
         $Body = @{Status = "Failed to retrieve maintenance scripts $($_.Exception.Message)" }
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Body
         })

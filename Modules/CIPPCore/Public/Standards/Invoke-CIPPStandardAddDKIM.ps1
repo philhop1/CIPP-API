@@ -13,7 +13,9 @@ function Invoke-CIPPStandardAddDKIM {
         CAT
             Exchange Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (2.1.9)"
+        EXECUTIVETEXT
+            Enables email authentication technology that digitally signs outgoing emails to verify they actually came from your organization. This prevents email spoofing, improves email deliverability, and protects the company's reputation by ensuring recipients can trust emails from your domains.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -32,7 +34,11 @@ function Invoke-CIPPStandardAddDKIM {
 
     param($Tenant, $Settings)
     #$Rerun -Type Standard -Tenant $Tenant -API 'AddDKIM' -Settings $Settings
+    $TestResult = Test-CIPPStandardLicense -StandardName 'AddDKIM' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
     $DkimRequest = @(
         @{
@@ -54,10 +60,10 @@ function Invoke-CIPPStandardAddDKIM {
     # Check for errors in the batch results. Cannot continue if there are errors.
     $ErrorCounter = 0
     $ErrorMessages = [System.Collections.Generic.List[string]]::new()
-    $BatchResults | ForEach-Object {
-        if ($_.error) {
+    foreach ($Result in $BatchResults) {
+        if ($Result.error) {
             $ErrorCounter++
-            $ErrorMessage = Get-NormalizedError -Message $_.error
+            $ErrorMessage = Get-NormalizedError -Message $Result.error
             $ErrorMessages.Add($ErrorMessage)
         }
     }
@@ -69,6 +75,7 @@ function Invoke-CIPPStandardAddDKIM {
     # Same exclusions also found in Push-DomainAnalyserTenant
     $ExclusionDomains = @(
         '*.microsoftonline.com'
+        '*.mail.onmicrosoft.com'
         '*.exclaimer.cloud'
         '*.excl.cloud'
         '*.codetwo.online'
@@ -76,10 +83,13 @@ function Invoke-CIPPStandardAddDKIM {
         '*.signature365.net'
         '*.myteamsconnect.io'
         '*.teams.dstny.com'
+        '*.msteams.8x8.com'
+        '*.ucconnect.co.uk'
+        '*.teams-sbc.dk'
     )
 
-    $AllDomains = ($BatchResults | Where-Object { $_.DomainName }).DomainName | ForEach-Object {
-        $Domain = $_
+    $AllDomains = foreach ($DomainName in ($BatchResults | Where-Object { $_.DomainName }).DomainName) {
+        $Domain = $DomainName
         foreach ($ExclusionDomain in $ExclusionDomains) {
             if ($Domain -like $ExclusionDomain) {
                 $Domain = $null
@@ -87,8 +97,8 @@ function Invoke-CIPPStandardAddDKIM {
         }
         if ($null -ne $Domain) { $Domain }
     }
-    $DKIM = $BatchResults | Where-Object { $_.Domain } | Select-Object Domain, Enabled, Status | ForEach-Object {
-        $Domain = $_
+    $DKIM = foreach ($DkimConfig in ($BatchResults | Where-Object { $_.Domain } | Select-Object Domain, Enabled, Status)) {
+        $Domain = $DkimConfig
         foreach ($ExclusionDomain in $ExclusionDomains) {
             if ($Domain.Domain -like $ExclusionDomain) {
                 $Domain = $null
@@ -101,7 +111,18 @@ function Invoke-CIPPStandardAddDKIM {
     $NewDomains = $AllDomains | Where-Object { $DKIM.Domain -notcontains $_ }
     $SetDomains = $DKIM | Where-Object { $AllDomains -contains $_.Domain -and $_.Enabled -eq $false }
 
-    If ($Settings.remediate -eq $true) {
+    $MissingDKIM = [System.Collections.Generic.List[object]]::new()
+    if ($null -ne $NewDomains) {
+        $MissingDKIM.AddRange(@($NewDomains))
+    }
+    if ($null -ne $SetDomains) {
+        $MissingDKIM.AddRange(@($SetDomains.Domain))
+    }
+
+    $CurrentValue = if ($MissingDKIM.Count -eq 0) { [PSCustomObject]@{'state' = 'Configured correctly' } } else { [PSCustomObject]@{'MissingDKIM' = $MissingDKIM } }
+    $ExpectedValue = [PSCustomObject]@{'state' = 'Configured correctly' }
+
+    if ($Settings.remediate -eq $true) {
 
         if ($null -eq $NewDomains -and $null -eq $SetDomains) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'DKIM is already enabled for all available domains.' -sev Info
@@ -110,37 +131,37 @@ function Invoke-CIPPStandardAddDKIM {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message "Trying to enable DKIM for:$($NewDomains -join ', ' ) $($SetDomains.Domain -join ', ')" -sev Info
 
             # New-domains
-            $Request = $NewDomains | ForEach-Object {
+            $Request = foreach ($Domain in $NewDomains) {
                 @{
                     CmdletInput = @{
                         CmdletName = 'New-DkimSigningConfig'
-                        Parameters = @{ KeySize = 2048; DomainName = $_; Enabled = $true }
+                        Parameters = @{ KeySize = 2048; DomainName = $Domain; Enabled = $true }
                     }
                 }
             }
             if ($null -ne $Request) { $BatchResults = New-ExoBulkRequest -tenantid $Tenant -cmdletArray @($Request) -useSystemMailbox $true }
-            $BatchResults | ForEach-Object {
-                if ($_.error) {
+            foreach ($Result in $BatchResults) {
+                if ($Result.error) {
                     $ErrorCounter ++
-                    $ErrorMessage = Get-NormalizedError -Message $_.error
+                    $ErrorMessage = Get-NormalizedError -Message $Result.error
                     Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to enable DKIM. Error: $ErrorMessage" -sev Error
                 }
             }
 
             # Set-domains
-            $Request = $SetDomains | ForEach-Object {
+            $Request = foreach ($Domain in $SetDomains) {
                 @{
                     CmdletInput = @{
                         CmdletName = 'Set-DkimSigningConfig'
-                        Parameters = @{ Identity = $_.Domain; Enabled = $true }
+                        Parameters = @{ Identity = $Domain.Domain; Enabled = $true }
                     }
                 }
             }
             if ($null -ne $Request) { $BatchResults = New-ExoBulkRequest -tenantid $Tenant -cmdletArray @($Request) -useSystemMailbox $true }
-            $BatchResults | ForEach-Object {
-                if ($_.error) {
+            foreach ($Result in $BatchResults) {
+                if ($Result.error) {
                     $ErrorCounter ++
-                    $ErrorMessage = Get-NormalizedError -Message $_.error
+                    $ErrorMessage = Get-NormalizedError -Message $Result.error
                     Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to set DKIM. Error: $ErrorMessage" -sev Error
                 }
             }
@@ -168,7 +189,7 @@ function Invoke-CIPPStandardAddDKIM {
 
     if ($Settings.report -eq $true) {
         $DKIMState = if ($null -eq $NewDomains -and $null -eq $SetDomains) { $true } else { $SetDomains, $NewDomains }
-        Set-CIPPStandardsCompareField -FieldName 'standards.AddDKIM' -FieldValue $DKIMState -TenantFilter $tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.AddDKIM' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $tenant
         Add-CIPPBPAField -FieldName 'DKIM' -FieldValue $DKIMState -StoreAs bool -Tenant $tenant
     }
 }

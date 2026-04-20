@@ -13,6 +13,9 @@ function Invoke-CIPPStandardDisableM365GroupUsers {
         CAT
             Entra (AAD) Standards
         TAG
+            "CISA (MS.AAD.21.1v1)"
+        EXECUTIVETEXT
+            Restricts the creation of Microsoft 365 groups, Teams, and SharePoint sites to authorized administrators, preventing uncontrolled proliferation of collaboration spaces. This ensures proper governance, naming conventions, and resource management while maintaining oversight of all collaborative environments.
         ADDEDCOMPONENT
         IMPACT
             Low Impact
@@ -28,11 +31,22 @@ function Invoke-CIPPStandardDisableM365GroupUsers {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableM365GroupUsers'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'DisableM365GroupUsers' -TenantFilter $Tenant -RequiredCapabilities @('SHAREPOINTWAC', 'SHAREPOINTSTANDARD', 'SHAREPOINTENTERPRISE', 'SHAREPOINTENTERPRISE_EDU', 'ONEDRIVE_BASIC', 'ONEDRIVE_ENTERPRISE')
 
-    $CurrentState = (New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/settings' -tenantid $tenant) | Where-Object -Property displayname -EQ 'Group.unified'
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
-    If ($Settings.remediate -eq $true) {
+    try {
+        $CurrentState = (New-GraphGetRequest -Uri 'https://graph.microsoft.com/beta/settings' -tenantid $tenant) |
+            Where-Object -Property displayname -EQ 'Group.unified'
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the DisableM365GroupUsers state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
+
+    if ($Settings.remediate -eq $true) {
         if (($CurrentState.values | Where-Object { $_.name -eq 'EnableGroupCreation' }).value -eq 'false') {
             Write-LogMessage -API 'Standards' -tenant $tenant -message 'Users are already disabled from creating M365 Groups.' -sev Info
         } else {
@@ -77,7 +91,15 @@ function Invoke-CIPPStandardDisableM365GroupUsers {
         } else {
             $CurrentState = $false
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.DisableM365GroupUsers' -FieldValue $CurrentState -TenantFilter $Tenant
+
+        $CurrentValue = [PSCustomObject]@{
+            M365GroupUserCreationDisabled = $CurrentState
+        }
+        $ExpectedValue = [PSCustomObject]@{
+            M365GroupUserCreationDisabled = $true
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableM365GroupUsers' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'DisableM365GroupUsers' -FieldValue $CurrentState -StoreAs bool -Tenant $tenant
     }
 

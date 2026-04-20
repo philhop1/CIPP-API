@@ -13,6 +13,9 @@ function Invoke-CIPPStandardintuneDeviceReg {
         CAT
             Intune Standards
         TAG
+            "CISA (MS.AAD.17.1v1)"
+        EXECUTIVETEXT
+            Limits how many devices each employee can register for corporate access, preventing excessive device proliferation while accommodating legitimate business needs. This helps maintain security oversight and prevents potential abuse of device registration privileges.
         ADDEDCOMPONENT
             {"type":"number","name":"standards.intuneDeviceReg.max","label":"Maximum devices (Enter 2147483647 for unlimited.)","required":true}
         IMPACT
@@ -29,12 +32,22 @@ function Invoke-CIPPStandardintuneDeviceReg {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'intuneDeviceReg'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'intuneDeviceReg' -TenantFilter $Tenant -RequiredCapabilities @('INTUNE_A', 'MDM_Services', 'EMS', 'SCCM', 'MICROSOFTINTUNEPLAN1')
 
-    $PreviousSetting = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy' -tenantid $Tenant
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $PreviousSetting = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/policies/deviceRegistrationPolicy' -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the intuneDeviceReg state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
     $StateIsCorrect = if ($PreviousSetting.userDeviceQuota -eq $Settings.max) { $true } else { $false }
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
 
         if ($PreviousSetting.userDeviceQuota -eq $Settings.max) {
             Write-LogMessage -API 'Standards' -tenant $tenant -message "User device quota is already set to $($Settings.max)" -sev Info
@@ -62,8 +75,13 @@ function Invoke-CIPPStandardintuneDeviceReg {
     }
 
     if ($Settings.report -eq $true) {
-        $state = $StateIsCorrect ? $true : $PreviousSetting.userDeviceQuota
-        Set-CIPPStandardsCompareField -FieldName 'standards.intuneDeviceReg' -FieldValue $state -TenantFilter $Tenant
+        $CurrentValue = @{
+            userDeviceQuota = $PreviousSetting.userDeviceQuota
+        }
+        $ExpectedValue = @{
+            userDeviceQuota = $Settings.max
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.intuneDeviceReg' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'intuneDeviceReg' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $tenant
     }
 }

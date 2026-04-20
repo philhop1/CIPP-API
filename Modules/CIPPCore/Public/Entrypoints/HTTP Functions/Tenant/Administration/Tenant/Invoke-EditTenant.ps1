@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-EditTenant {
     <#
     .FUNCTIONALITY
@@ -13,8 +11,8 @@ function Invoke-EditTenant {
     $APIName = $Request.Params.CIPPEndpoint
     $Headers = $Request.Headers
 
-    Write-LogMessage -headers $Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
 
+    # Interact with query parameters or the body of the request.
     $customerId = $Request.Body.customerId
     $tenantAlias = $Request.Body.tenantAlias
     $tenantGroups = $Request.Body.tenantGroups
@@ -47,8 +45,13 @@ function Invoke-EditTenant {
         }
 
         # Update tenant groups
+        $GroupTable = Get-CippTable -TableName 'TenantGroups'
+        $StaticGroups = Get-CIPPAzDataTableEntity @GroupTable -Filter "PartitionKey eq 'TenantGroup' and GroupType ne 'dynamic'"
+        $StaticGroupIds = $StaticGroups.RowKey
         $CurrentGroupMemberships = Get-CIPPAzDataTableEntity @GroupMembersTable -Filter "customerId eq '$customerId'"
         foreach ($Group in $tenantGroups) {
+            # Only allow adding to static groups; dynamic group membership is managed by the orchestrator
+            if ($StaticGroupIds -notcontains $Group.groupId) { continue }
             $GroupEntity = $CurrentGroupMemberships | Where-Object { $_.GroupId -eq $Group.groupId }
             if (!$GroupEntity) {
                 $GroupEntity = @{
@@ -58,31 +61,57 @@ function Invoke-EditTenant {
                     customerId   = $customerId
                 }
                 Add-CIPPAzDataTableEntity @GroupMembersTable -Entity $GroupEntity -Force
+                Write-LogMessage -headers $Headers -API $APINAME -tenant $Tenant.defaultDomainName -TenantId $Tenant.customerId -message "Added tenant to group '$($Group.groupName)'" -Sev 'Info'
             }
         }
 
-        # Remove any groups that are no longer selected
-        foreach ($Group in $CurrentGroupMemberships) {
-            if ($tenantGroups.GroupId -notcontains $Group.GroupId) {
-                Remove-AzDataTableEntity @GroupMembersTable -Entity $Group
+        # Remove any static groups that are no longer selected (dynamic groups are managed by the orchestrator)
+        if ($tenantGroups) {
+            foreach ($Group in $CurrentGroupMemberships) {
+                if ($StaticGroupIds -contains $Group.GroupId -and $tenantGroups.GroupId -notcontains $Group.GroupId) {
+                    $GroupName = ($StaticGroups | Where-Object { $_.RowKey -eq $Group.GroupId }).Name
+                    Remove-AzDataTableEntity @GroupMembersTable -Entity $Group
+                    Write-LogMessage -headers $Headers -API $APINAME -tenant $Tenant.defaultDomainName -TenantId $Tenant.customerId -message "Removed tenant from group '$GroupName'" -Sev 'Info'
+                }
             }
         }
+        $DomainBasedEntries = Get-CIPPAzDataTableEntity @GroupMembersTable -Filter "customerId eq '$($Tenant.defaultDomainName)'"
+        if ($DomainBasedEntries) {
+            foreach ($Entry in $DomainBasedEntries) {
+                try {
+                    # Add corrected GUID-based entry using the actual GUID
+                    $NewEntry = @{
+                        PartitionKey = 'Member'
+                        RowKey       = '{0}-{1}' -f $Entry.GroupId, $Tenant.customerId
+                        GroupId      = $Entry.GroupId
+                        customerId   = $Tenant.customerId
+                    }
+                    Add-CIPPAzDataTableEntity @GroupMembersTable -Entity $NewEntry -Force
+                    Remove-AzDataTableEntity @GroupMembersTable -Entity $Entry
+                } catch {
+                    Write-Host "Error migrating entry: $($_.Exception.Message)"
+                }
+            }
+        }
+
+        # Bust the TenantGroups cache so subsequent calls reflect the changes made above
+        Get-TenantGroups -SkipCache | Out-Null
 
         $response = @{
             state      = 'success'
             resultText = 'Tenant details updated successfully'
         }
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::OK
                 Body       = $response
             })
     } catch {
-        Write-LogMessage -headers $Headers -tenant $customerId -API $APINAME -message "Edit Tenant failed. The error is: $($_.Exception.Message)" -Sev 'Error'
+        Write-LogMessage -headers $Headers -tenant $Tenant.defaultDomainName -TenantId $Tenant.customerId -API $APINAME -message "Edit Tenant failed. The error is: $($_.Exception.Message)" -Sev 'Error'
         $response = @{
             state      = 'error'
             resultText = $_.Exception.Message
         }
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::InternalServerError
                 Body       = $response
             })

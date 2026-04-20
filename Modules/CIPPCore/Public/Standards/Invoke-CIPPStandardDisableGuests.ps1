@@ -5,15 +5,18 @@ function Invoke-CIPPStandardDisableGuests {
     .COMPONENT
         (APIName) DisableGuests
     .SYNOPSIS
-        (Label) Disable Guest accounts that have not logged on for 90 days
+        (Label) Disable Guest accounts that have not logged on for a number of days
     .DESCRIPTION
-        (Helptext) Blocks login for guest users that have not logged in for 90 days
-        (DocsDescription) Blocks login for guest users that have not logged in for 90 days
+        (Helptext) Blocks login for guest users that have not logged in for a number of days
+        (DocsDescription) Blocks login for guest users that have not logged in for a number of days
     .NOTES
         CAT
             Entra (AAD) Standards
         TAG
+        EXECUTIVETEXT
+            Automatically disables external guest accounts that haven't been used for a number of days, reducing security risks from dormant accounts while maintaining access for active external collaborators. This helps maintain a clean user directory and reduces potential attack vectors.
         ADDEDCOMPONENT
+            {"type":"number","name":"standards.DisableGuests.days","required":true,"defaultValue":90,"label":"Days of inactivity"}
         IMPACT
             Medium Impact
         ADDEDDATE
@@ -30,49 +33,123 @@ function Invoke-CIPPStandardDisableGuests {
     #>
 
     param($Tenant, $Settings)
-    ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'DisableGuests'
+    $TestResult = Test-CIPPStandardLicense -StandardName 'DisableGuests' -TenantFilter $Tenant -RequiredCapabilities @('AAD_PREMIUM', 'AAD_PREMIUM_P2')
 
-    $90Days = (Get-Date).AddDays(-90).ToUniversalTime()
-    $Lookup = $90Days.ToString('o')
+    if ($TestResult -eq $false) {
+        #writing to each item that the license is not present.
+        foreach ($Template in $settings.TemplateList) {
+            Set-CIPPStandardsCompareField -FieldName 'standards.DisableGuests' -FieldValue 'This tenant does not have the required license for this standard.' -Tenant $Tenant
+        }
+        return $true
+    } #we're done.
+
+    $checkDays = if ($Settings.days) { $Settings.days } else { 90 } # Default to 90 days if not set. Pre v8.5.0 compatibility
+    $Days = (Get-Date).AddDays(-$checkDays).ToUniversalTime()
+    $Lookup = $Days.ToString('o')
     $AuditLookup = (Get-Date).AddDays(-7).ToUniversalTime().ToString('o')
 
-    $GraphRequest = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users?`$filter=createdDateTime le $Lookup and userType eq 'Guest' and accountEnabled eq true &`$select=id,UserPrincipalName,signInActivity,mail,userType,accountEnabled,createdDateTime,externalUserState" -scope 'https://graph.microsoft.com/.default' -tenantid $Tenant |
-        Where-Object { $_.signInActivity.lastSuccessfulSignInDateTime -le $90Days }
+    try {
+        $GraphRequest = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/users?`$filter=createdDateTime le $Lookup and userType eq 'Guest' and accountEnabled eq true &`$select=id,UserPrincipalName,signInActivity,mail,userType,accountEnabled,createdDateTime,externalUserState" -scope 'https://graph.microsoft.com/.default' -tenantid $Tenant
 
-    $RecentlyReactivatedUsers = (New-GraphGetRequest -uri "https://graph.microsoft.com/beta/auditLogs/directoryAudits?`$filter=activityDisplayName eq 'Enable account' and activityDateTime ge $AuditLookup" -scope 'https://graph.microsoft.com/.default' -tenantid $Tenant |
-        ForEach-Object { $_.targetResources[0].id } | Select-Object -Unique)
+        $EnrichedGuests = [System.Collections.Generic.List[object]]::new()
+        foreach ($guest in $GraphRequest) {
+            $lastSignIn = $null
+            if ($guest.signInActivity -and $guest.signInActivity.lastSuccessfulSignInDateTime) {
+                $lastSignIn = [datetime]$guest.signInActivity.lastSuccessfulSignInDateTime
+            } else {
+                # signInActivity is null, try auditLogs/signIns
+                $SignInLogs = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/auditLogs/signIns?`$filter=userId eq '$($guest.id)' and status/errorCode eq 0&`$orderby=createdDateTime desc&`$top=1" -scope 'https://graph.microsoft.com/.default' -tenantid $Tenant -noPagination $true
+                if ($SignInLogs -and $SignInLogs.Count -gt 0) {
+                    $lastSignIn = [datetime]$SignInLogs[0].authenticationDetails.authenticationStepDateTime
+                }
+            }
+            # Only add guests whose last sign-in is older than cutoff
+            if ($lastSignIn -and $lastSignIn.ToUniversalTime() -le $Days) {
+                $guest | Add-Member -MemberType NoteProperty -Name 'EnrichedLastSignInDateTime' -Value $lastSignIn -Force
+                $EnrichedGuests.Add($guest)
+            }
+        }
+        $GraphRequest = $EnrichedGuests
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the DisableGuests state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
+
+    $AuditResults = New-GraphGetRequest -uri "https://graph.microsoft.com/beta/auditLogs/directoryAudits?`$filter=activityDisplayName eq 'Enable account' and activityDateTime ge $AuditLookup" -scope 'https://graph.microsoft.com/.default' -tenantid $Tenant
+    $RecentlyReactivatedUsers = @(foreach ($AuditEntry in $AuditResults) { $AuditEntry.targetResources[0].id }) | Select-Object -Unique
 
     $GraphRequest = $GraphRequest | Where-Object { -not ($RecentlyReactivatedUsers -contains $_.id) }
 
-    If ($Settings.remediate -eq $true) {
+    if ($Settings.remediate -eq $true) {
         if ($GraphRequest.Count -gt 0) {
-            foreach ($guest in $GraphRequest) {
-                try {
-                    New-GraphPostRequest -type Patch -tenantid $tenant -uri "https://graph.microsoft.com/beta/users/$($guest.id)" -body '{"accountEnabled":"false"}'
-                    Write-LogMessage -API 'Standards' -tenant $tenant -message "Disabling guest $($guest.UserPrincipalName) ($($guest.id))" -sev Info
-                } catch {
-                    $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
-                    Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable guest $($guest.UserPrincipalName) ($($guest.id)): $ErrorMessage" -sev Error
+            $int = 0
+            $BulkRequests = foreach ($guest in $GraphRequest) {
+                @{
+                    id        = $int++
+                    method    = 'PATCH'
+                    url       = "users/$($guest.id)"
+                    body      = @{ accountEnabled = $false }
+                    'headers' = @{
+                        'Content-Type' = 'application/json'
+                    }
                 }
             }
-        } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'No guests accounts with a login longer than 90 days ago.' -sev Info
-        }
 
+            try {
+                $BulkResults = New-GraphBulkRequest -tenantid $tenant -Requests @($BulkRequests)
+
+                for ($i = 0; $i -lt $BulkResults.Count; $i++) {
+                    $result = $BulkResults[$i]
+                    $guest = $GraphRequest[$i]
+
+                    $lastSignIn = $guest.signInActivity?.lastSuccessfulSignInDateTime
+                    if (-not $lastSignIn -and $guest.EnrichedLastSignInDateTime) {
+                        $lastSignIn = $guest.EnrichedLastSignInDateTime
+                    }
+
+                    if ($result.status -eq 200 -or $result.status -eq 204) {
+                        $guest.accountEnabled = $false
+                        Write-LogMessage -API 'Standards' -tenant $tenant -message "Disabled guest $($guest.UserPrincipalName) ($($guest.id)). Last sign-in: $lastSignIn" -sev Info
+                    } else {
+                        $errorMsg = if ($result.body.error.message) { $result.body.error.message } else { "Unknown error (Status: $($result.status))" }
+                        Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to disable guest $($guest.UserPrincipalName) ($($guest.id)): $errorMsg" -sev Error
+                    }
+                }
+            } catch {
+                $ErrorMessage = Get-CippException -Exception $_
+                Write-LogMessage -API 'Standards' -tenant $tenant -message "Failed to process bulk disable guests request: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
+            }
+        } else {
+            Write-LogMessage -API 'Standards' -tenant $tenant -message "No guests accounts with a login longer than $checkDays days ago - all guest accounts are already compliant." -sev Info
+        }
     }
     if ($Settings.alert -eq $true) {
 
         if ($GraphRequest.Count -gt 0) {
-            Write-StandardsAlert -message "Guests accounts with a login longer than 90 days ago: $($GraphRequest.count)" -object $GraphRequest -tenant $tenant -standardName 'DisableGuests' -standardId $Settings.standardId
-            Write-LogMessage -API 'Standards' -tenant $tenant -message "Guests accounts with a login longer than 90 days ago: $($GraphRequest.count)" -sev Info
+            $Filtered = $GraphRequest | Select-Object -Property UserPrincipalName, id, signInActivity, mail, userType, accountEnabled, externalUserState
+            Write-StandardsAlert -message "Guests accounts with a login longer than 90 days ago: $($GraphRequest.count)" -object $Filtered -tenant $tenant -standardName 'DisableGuests' -standardId $Settings.standardId
+            Write-LogMessage -API 'Standards' -tenant $tenant -message "Guests accounts with a login longer than $checkDays days ago: $($GraphRequest.count)" -sev Info
         } else {
-            Write-LogMessage -API 'Standards' -tenant $tenant -message 'No guests accounts with a login longer than 90 days ago.' -sev Info
+            Write-LogMessage -API 'Standards' -tenant $tenant -message "No guests accounts with a login longer than $checkDays days ago." -sev Info
         }
     }
     if ($Settings.report -eq $true) {
-        $filtered = $GraphRequest | Select-Object -Property UserPrincipalName, id, signInActivity, mail, userType, accountEnabled
-        $state = $filtered ? $filtered : $true
-        Set-CIPPStandardsCompareField -FieldName 'standards.DisableGuests' -FieldValue $state -TenantFilter $Tenant
-        Add-CIPPBPAField -FieldName 'DisableGuests' -FieldValue $filtered -StoreAs json -Tenant $tenant
+        $Filtered = $GraphRequest | Where-Object { $_.accountEnabled } | Select-Object -Property UserPrincipalName, id, signInActivity, EnrichedLastSignInDateTime, mail, userType, accountEnabled
+
+        $CurrentValue = [PSCustomObject]@{
+            GuestsDisabledAfterDays      = $checkDays
+            GuestsDisabledAccountCount   = $Filtered.Count
+            GuestsDisabledAccountDetails = @($Filtered)
+        }
+
+        $ExpectedValue = [PSCustomObject]@{
+            GuestsDisabledAfterDays      = $checkDays
+            GuestsDisabledAccountCount   = 0
+            GuestsDisabledAccountDetails = @()
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.DisableGuests' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
+        Add-CIPPBPAField -FieldName 'DisableGuests' -FieldValue $Filtered -StoreAs json -Tenant $tenant
     }
 }

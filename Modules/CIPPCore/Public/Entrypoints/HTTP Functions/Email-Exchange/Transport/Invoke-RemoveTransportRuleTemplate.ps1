@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-RemoveTransportRuleTemplate {
+function Invoke-RemoveTransportRuleTemplate {
     <#
     .FUNCTIONALITY
         Entrypoint,AnyTenant
@@ -17,7 +15,8 @@ Function Invoke-RemoveTransportRuleTemplate {
     $ID = $request.query.ID ?? $request.body.ID
     try {
         $Table = Get-CippTable -tablename 'templates'
-        $Filter = "PartitionKey eq 'TransportTemplate' and RowKey eq '$id'"
+        $SafeID = ConvertTo-CIPPODataFilterValue -Value $ID -Type String
+        $Filter = "PartitionKey eq 'TransportTemplate' and RowKey eq '$SafeID'"
         $ClearRow = Get-CIPPAzDataTableEntity @Table -Filter $Filter -Property PartitionKey, RowKey
         Remove-AzDataTableEntity -Force @Table -Entity $ClearRow
         $Result = "Removed Transport Rule Template with ID $ID."
@@ -31,8 +30,7 @@ Function Invoke-RemoveTransportRuleTemplate {
     }
 
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @{ Results = $Result }
         })

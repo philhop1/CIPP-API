@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ListLicenses {
+function Invoke-ListLicenses {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,18 +7,10 @@ Function Invoke-ListLicenses {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
-
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.tenantFilter
-    $RawGraphRequest = if ($TenantFilter -ne 'AllTenants') {
+    if ($TenantFilter -ne 'AllTenants') {
         $GraphRequest = Get-CIPPLicenseOverview -TenantFilter $TenantFilter | ForEach-Object {
-            $TermInfo = $_.TermInfo | ConvertFrom-Json -ErrorAction SilentlyContinue
-            $_.TermInfo = $TermInfo
             $_
         }
     } else {
@@ -42,25 +32,22 @@ Function Invoke-ListLicenses {
                     SkipLog          = $true
                 }
                 #Write-Host ($InputObject | ConvertTo-Json)
-                $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+                $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
                 Write-Host "Started permissions orchestration with ID = '$InstanceId'"
             }
         } else {
-            $GraphRequest = $Rows | Where-Object { $_.License } | ForEach-Object {
-                if ($_.TermInfo) {
-                    $TermInfo = $_.TermInfo | ConvertFrom-Json -ErrorAction SilentlyContinue
-                    $_.TermInfo = $TermInfo
-                } else {
-                    $_ | Add-Member -NotePropertyName TermInfo -NotePropertyValue $null
+            $GraphRequest = $Rows | ForEach-Object {
+                $LicenseData = $_.License | ConvertFrom-Json -ErrorAction SilentlyContinue
+                foreach ($License in $LicenseData) {
+                    $License
                 }
-                $_
             }
         }
     }
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($GraphRequest)
-        }) -Clobber
+        })
 
 }

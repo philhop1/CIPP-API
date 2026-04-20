@@ -8,12 +8,13 @@ function Invoke-CIPPStandardSpamFilterPolicy {
         (Label) Default Spam Filter Policy
     .DESCRIPTION
         (Helptext) This standard creates a Spam filter policy similar to the default strict policy.
-        (DocsDescription) This standard creates a Spam filter policy similar to the default strict policy.
+        (DocsDescription) This standard creates a Spam filter policy similar to the default strict policy, the following settings are configured to on by default: IncreaseScoreWithNumericIps, IncreaseScoreWithRedirectToOtherPort, MarkAsSpamEmptyMessages, MarkAsSpamJavaScriptInHtml, MarkAsSpamSpfRecordHardFail, MarkAsSpamFromAddressAuthFail, MarkAsSpamNdrBackscatter, MarkAsSpamBulkMail, InlineSafetyTipsEnabled, PhishZapEnabled, SpamZapEnabled
     .NOTES
         CAT
             Defender Standards
         TAG
         ADDEDCOMPONENT
+            {"type":"textField","name":"standards.SpamFilterPolicy.name","label":"Policy Name","required":true,"defaultValue":"CIPP Default Spam Filter Policy"}
             {"type":"number","label":"Bulk email threshold (Default 7)","name":"standards.SpamFilterPolicy.BulkThreshold","defaultValue":7}
             {"type":"autoComplete","required":true,"multiple":false,"creatable":false,"label":"Spam Action","name":"standards.SpamFilterPolicy.SpamAction","options":[{"label":"Quarantine the message","value":"Quarantine"},{"label":"Move message to Junk Email folder","value":"MoveToJmf"}]}
             {"type":"autoComplete","required":true,"multiple":false,"creatable":true,"label":"Spam Quarantine Tag","name":"standards.SpamFilterPolicy.SpamQuarantineTag","options":[{"label":"AdminOnlyAccessPolicy","value":"AdminOnlyAccessPolicy"},{"label":"DefaultFullAccessPolicy","value":"DefaultFullAccessPolicy"},{"label":"DefaultFullAccessWithNotificationPolicy","value":"DefaultFullAccessWithNotificationPolicy"}]}
@@ -51,10 +52,23 @@ function Invoke-CIPPStandardSpamFilterPolicy {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SpamFilterPolicy' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
-    $PolicyName = 'CIPP Default Spam Filter Policy'
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
-    $CurrentState = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-HostedContentFilterPolicy' | Where-Object -Property Name -EQ $PolicyName | Select-Object -Property *
+    # Use custom name if provided, otherwise use default for backward compatibility
+    $PolicyName = if ($Settings.name) { $Settings.name } else { 'CIPP Default Spam Filter Policy' }
+
+    try {
+        $CurrentState = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-HostedContentFilterPolicy' |
+            Where-Object -Property Name -EQ $PolicyName
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the SpamFilterPolicy state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
 
     $SpamAction = $Settings.SpamAction.value ?? $Settings.SpamAction
     $SpamQuarantineTag = $Settings.SpamQuarantineTag.value ?? $Settings.SpamQuarantineTag
@@ -75,49 +89,52 @@ function Invoke-CIPPStandardSpamFilterPolicy {
     $MarkAsSpamWebBugsInHtml = if ($Settings.MarkAsSpamWebBugsInHtml) { 'On' } else { 'Off' }
     $MarkAsSpamSensitiveWordList = if ($Settings.MarkAsSpamSensitiveWordList) { 'On' } else { 'Off' }
 
-    $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
-    ($CurrentState.SpamAction -eq $SpamAction) -and
-    ($CurrentState.SpamQuarantineTag -eq $SpamQuarantineTag) -and
-    ($CurrentState.HighConfidenceSpamAction -eq $HighConfidenceSpamAction) -and
-    ($CurrentState.HighConfidenceSpamQuarantineTag -eq $HighConfidenceSpamQuarantineTag) -and
-    ($CurrentState.BulkSpamAction -eq $BulkSpamAction) -and
-    ($CurrentState.BulkQuarantineTag -eq $BulkQuarantineTag) -and
-    ($CurrentState.PhishSpamAction -eq $PhishSpamAction) -and
-    ($CurrentState.PhishQuarantineTag -eq $PhishQuarantineTag) -and
-    ($CurrentState.HighConfidencePhishAction -eq 'Quarantine') -and
-    ($CurrentState.HighConfidencePhishQuarantineTag -eq $HighConfidencePhishQuarantineTag) -and
-    ($CurrentState.BulkThreshold -eq [int]$Settings.BulkThreshold) -and
-    ($CurrentState.QuarantineRetentionPeriod -eq 30) -and
-    ($CurrentState.IncreaseScoreWithImageLinks -eq $IncreaseScoreWithImageLinks) -and
-    ($CurrentState.IncreaseScoreWithNumericIps -eq 'On') -and
-    ($CurrentState.IncreaseScoreWithRedirectToOtherPort -eq 'On') -and
-    ($CurrentState.IncreaseScoreWithBizOrInfoUrls -eq $IncreaseScoreWithBizOrInfoUrls) -and
-    ($CurrentState.MarkAsSpamEmptyMessages -eq 'On') -and
-    ($CurrentState.MarkAsSpamJavaScriptInHtml -eq 'On') -and
-    ($CurrentState.MarkAsSpamFramesInHtml -eq $MarkAsSpamFramesInHtml) -and
-    ($CurrentState.MarkAsSpamObjectTagsInHtml -eq $MarkAsSpamObjectTagsInHtml) -and
-    ($CurrentState.MarkAsSpamEmbedTagsInHtml -eq $MarkAsSpamEmbedTagsInHtml) -and
-    ($CurrentState.MarkAsSpamFormTagsInHtml -eq $MarkAsSpamFormTagsInHtml) -and
-    ($CurrentState.MarkAsSpamWebBugsInHtml -eq $MarkAsSpamWebBugsInHtml) -and
-    ($CurrentState.MarkAsSpamSensitiveWordList -eq $MarkAsSpamSensitiveWordList) -and
-    ($CurrentState.MarkAsSpamSpfRecordHardFail -eq 'On') -and
-    ($CurrentState.MarkAsSpamFromAddressAuthFail -eq 'On') -and
-    ($CurrentState.MarkAsSpamNdrBackscatter -eq 'On') -and
-    ($CurrentState.MarkAsSpamBulkMail -eq 'On') -and
-    ($CurrentState.InlineSafetyTipsEnabled -eq $true) -and
-    ($CurrentState.PhishZapEnabled -eq $true) -and
-    ($CurrentState.SpamZapEnabled -eq $true) -and
-    ($CurrentState.EnableLanguageBlockList -eq $Settings.EnableLanguageBlockList) -and
-    ((-not $CurrentState.LanguageBlockList -and -not $Settings.LanguageBlockList.value) -or (!(Compare-Object -ReferenceObject $CurrentState.LanguageBlockList -DifferenceObject $Settings.LanguageBlockList.value))) -and
-    ($CurrentState.EnableRegionBlockList -eq $Settings.EnableRegionBlockList) -and
-    ((-not $CurrentState.RegionBlockList -and -not $Settings.RegionBlockList.value) -or (!(Compare-Object -ReferenceObject $CurrentState.RegionBlockList -DifferenceObject $Settings.RegionBlockList.value))) -and
-    (!(Compare-Object -ReferenceObject $CurrentState.AllowedSenderDomains -DifferenceObject ($Settings.AllowedSenderDomains.value ?? $Settings.AllowedSenderDomains)))
+    try {
+        $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
+        ($CurrentState.SpamAction -eq $SpamAction) -and
+        ($CurrentState.SpamQuarantineTag -eq $SpamQuarantineTag) -and
+        ($CurrentState.HighConfidenceSpamAction -eq $HighConfidenceSpamAction) -and
+        ($CurrentState.HighConfidenceSpamQuarantineTag -eq $HighConfidenceSpamQuarantineTag) -and
+        ($CurrentState.BulkSpamAction -eq $BulkSpamAction) -and
+        ($CurrentState.BulkQuarantineTag -eq $BulkQuarantineTag) -and
+        ($CurrentState.PhishSpamAction -eq $PhishSpamAction) -and
+        ($CurrentState.PhishQuarantineTag -eq $PhishQuarantineTag) -and
+        ($CurrentState.HighConfidencePhishAction -eq 'Quarantine') -and
+        ($CurrentState.HighConfidencePhishQuarantineTag -eq $HighConfidencePhishQuarantineTag) -and
+        ($CurrentState.BulkThreshold -eq [int]$Settings.BulkThreshold) -and
+        ($CurrentState.QuarantineRetentionPeriod -eq 30) -and
+        ($CurrentState.IncreaseScoreWithImageLinks -eq $IncreaseScoreWithImageLinks) -and
+        ($CurrentState.IncreaseScoreWithNumericIps -eq 'On') -and
+        ($CurrentState.IncreaseScoreWithRedirectToOtherPort -eq 'On') -and
+        ($CurrentState.IncreaseScoreWithBizOrInfoUrls -eq $IncreaseScoreWithBizOrInfoUrls) -and
+        ($CurrentState.MarkAsSpamEmptyMessages -eq 'On') -and
+        ($CurrentState.MarkAsSpamJavaScriptInHtml -eq 'On') -and
+        ($CurrentState.MarkAsSpamFramesInHtml -eq $MarkAsSpamFramesInHtml) -and
+        ($CurrentState.MarkAsSpamObjectTagsInHtml -eq $MarkAsSpamObjectTagsInHtml) -and
+        ($CurrentState.MarkAsSpamEmbedTagsInHtml -eq $MarkAsSpamEmbedTagsInHtml) -and
+        ($CurrentState.MarkAsSpamFormTagsInHtml -eq $MarkAsSpamFormTagsInHtml) -and
+        ($CurrentState.MarkAsSpamWebBugsInHtml -eq $MarkAsSpamWebBugsInHtml) -and
+        ($CurrentState.MarkAsSpamSensitiveWordList -eq $MarkAsSpamSensitiveWordList) -and
+        ($CurrentState.MarkAsSpamSpfRecordHardFail -eq 'On') -and
+        ($CurrentState.MarkAsSpamFromAddressAuthFail -eq 'On') -and
+        ($CurrentState.MarkAsSpamNdrBackscatter -eq 'On') -and
+        ($CurrentState.MarkAsSpamBulkMail -eq 'On') -and
+        ($CurrentState.InlineSafetyTipsEnabled -eq $true) -and
+        ($CurrentState.PhishZapEnabled -eq $true) -and
+        ($CurrentState.SpamZapEnabled -eq $true) -and
+        ($CurrentState.EnableLanguageBlockList -eq $Settings.EnableLanguageBlockList) -and
+        ((($null -eq $CurrentState.LanguageBlockList -or $CurrentState.LanguageBlockList.Count -eq 0) -and ($null -eq $Settings.LanguageBlockList.value)) -or ($null -ne $CurrentState.LanguageBlockList -and $CurrentState.LanguageBlockList.Count -gt 0 -and $null -ne $Settings.LanguageBlockList.value -and !(Compare-Object -ReferenceObject $CurrentState.LanguageBlockList -DifferenceObject $Settings.LanguageBlockList.value))) -and
+        ($CurrentState.EnableRegionBlockList -eq $Settings.EnableRegionBlockList) -and
+        ((($null -eq $CurrentState.RegionBlockList -or $CurrentState.RegionBlockList.Count -eq 0) -and ($null -eq $Settings.RegionBlockList.value)) -or ($null -ne $CurrentState.RegionBlockList -and $CurrentState.RegionBlockList.Count -gt 0 -and $null -ne $Settings.RegionBlockList.value -and !(Compare-Object -ReferenceObject $CurrentState.RegionBlockList -DifferenceObject $Settings.RegionBlockList.value))) -and
+        ((($null -eq $CurrentState.AllowedSenderDomains -or $CurrentState.AllowedSenderDomains.Count -eq 0) -and ($null -eq ($Settings.AllowedSenderDomains.value ?? $Settings.AllowedSenderDomains))) -or ($null -ne $CurrentState.AllowedSenderDomains -and $CurrentState.AllowedSenderDomains.Count -gt 0 -and $null -ne ($Settings.AllowedSenderDomains.value ?? $Settings.AllowedSenderDomains) -and !(Compare-Object -ReferenceObject $CurrentState.AllowedSenderDomains -DifferenceObject ($Settings.AllowedSenderDomains.value ?? $Settings.AllowedSenderDomains))))
+    } catch {
+        $StateIsCorrect = $false
+    }
 
     $AcceptedDomains = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-AcceptedDomain'
 
     $RuleState = New-ExoRequest -TenantId $Tenant -cmdlet 'Get-HostedContentFilterRule' |
-        Where-Object -Property Name -EQ $PolicyName |
-        Select-Object -Property *
+        Where-Object -Property Name -EQ $PolicyName
 
     $RuleStateIsCorrect = ($RuleState.Name -eq $PolicyName) -and
     ($RuleState.HostedContentFilterPolicy -eq $PolicyName) -and
@@ -238,11 +255,58 @@ function Invoke-CIPPStandardSpamFilterPolicy {
 
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'SpamFilterPolicy' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $Tenant
-        if ($StateIsCorrect) {
-            $FieldValue = $true
-        } else {
-            $FieldValue = $CurrentState ? $CurrentState : @{ state = 'Spam filter policy not found' }
+        $CurrentValue = @{
+            Name                             = $CurrentState.Name
+            SpamAction                       = $CurrentState.SpamAction
+            SpamQuarantineTag                = $CurrentState.SpamQuarantineTag
+            HighConfidenceSpamAction         = $CurrentState.HighConfidenceSpamAction
+            HighConfidenceSpamQuarantineTag  = $CurrentState.HighConfidenceSpamQuarantineTag
+            BulkSpamAction                   = $CurrentState.BulkSpamAction
+            BulkQuarantineTag                = $CurrentState.BulkQuarantineTag
+            PhishSpamAction                  = $CurrentState.PhishSpamAction
+            PhishQuarantineTag               = $CurrentState.PhishQuarantineTag
+            HighConfidencePhishQuarantineTag = $CurrentState.HighConfidencePhishQuarantineTag
+            BulkThreshold                    = $CurrentState.BulkThreshold
+            IncreaseScoreWithImageLinks      = $CurrentState.IncreaseScoreWithImageLinks
+            IncreaseScoreWithBizOrInfoUrls   = $CurrentState.IncreaseScoreWithBizOrInfoUrls
+            MarkAsSpamFramesInHtml           = $CurrentState.MarkAsSpamFramesInHtml
+            MarkAsSpamObjectTagsInHtml       = $CurrentState.MarkAsSpamObjectTagsInHtml
+            MarkAsSpamEmbedTagsInHtml        = $CurrentState.MarkAsSpamEmbedTagsInHtml
+            MarkAsSpamFormTagsInHtml         = $CurrentState.MarkAsSpamFormTagsInHtml
+            MarkAsSpamWebBugsInHtml          = $CurrentState.MarkAsSpamWebBugsInHtml
+            MarkAsSpamSensitiveWordList      = $CurrentState.MarkAsSpamSensitiveWordList
+            EnableLanguageBlockList          = $CurrentState.EnableLanguageBlockList
+            LanguageBlockList                = $CurrentState.LanguageBlockList
+            EnableRegionBlockList            = $CurrentState.EnableRegionBlockList
+            RegionBlockList                  = $CurrentState.RegionBlockList
+            AllowedSenderDomains             = $CurrentState.AllowedSenderDomains
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.SpamFilterPolicy' -FieldValue $FieldValue -Tenant $Tenant
+        $ExpectedValue = @{
+            Name                             = $PolicyName
+            SpamAction                       = $SpamAction
+            SpamQuarantineTag                = $SpamQuarantineTag
+            HighConfidenceSpamAction         = $HighConfidenceSpamAction
+            HighConfidenceSpamQuarantineTag  = $HighConfidenceSpamQuarantineTag
+            BulkSpamAction                   = $BulkSpamAction
+            BulkQuarantineTag                = $BulkQuarantineTag
+            PhishSpamAction                  = $PhishSpamAction
+            PhishQuarantineTag               = $PhishQuarantineTag
+            HighConfidencePhishQuarantineTag = $HighConfidencePhishQuarantineTag
+            BulkThreshold                    = [int]$Settings.BulkThreshold
+            IncreaseScoreWithImageLinks      = $IncreaseScoreWithImageLinks
+            IncreaseScoreWithBizOrInfoUrls   = $IncreaseScoreWithBizOrInfoUrls
+            MarkAsSpamFramesInHtml           = $MarkAsSpamFramesInHtml
+            MarkAsSpamObjectTagsInHtml       = $MarkAsSpamObjectTagsInHtml
+            MarkAsSpamEmbedTagsInHtml        = $MarkAsSpamEmbedTagsInHtml
+            MarkAsSpamFormTagsInHtml         = $MarkAsSpamFormTagsInHtml
+            MarkAsSpamWebBugsInHtml          = $MarkAsSpamWebBugsInHtml
+            MarkAsSpamSensitiveWordList      = $MarkAsSpamSensitiveWordList
+            EnableLanguageBlockList          = $Settings.EnableLanguageBlockList
+            LanguageBlockList                = $Settings.EnableLanguageBlockList ? @($Settings.EnableLanguageBlockList) : @()
+            EnableRegionBlockList            = $Settings.EnableRegionBlockList
+            RegionBlockList                  = $Settings.RegionBlockList.value ? @($Settings.RegionBlockList.value) : @()
+            AllowedSenderDomains             = $Settings.AllowedSenderDomains.value ? @($Settings.AllowedSenderDomains.value) : @()
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.SpamFilterPolicy' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

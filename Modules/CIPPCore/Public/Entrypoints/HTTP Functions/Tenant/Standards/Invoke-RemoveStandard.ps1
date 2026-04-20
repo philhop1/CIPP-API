@@ -1,9 +1,7 @@
-using namespace System.Net
-
 Function Invoke-RemoveStandard {
     <#
     .FUNCTIONALITY
-        Entrypoint,AnyTenant
+        Entrypoint
     .ROLE
         Tenant.Standards.ReadWrite
     #>
@@ -12,13 +10,14 @@ Function Invoke-RemoveStandard {
 
     $APIName = $Request.Params.CIPPEndpoint
     $Headers = $Request.Headers
-    Write-LogMessage -Headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+
 
     # Interact with query parameters or the body of the request.
     $ID = $Request.Query.ID
     try {
         $Table = Get-CippTable -tablename 'standards'
-        $Filter = "PartitionKey eq 'standards' and RowKey eq '$ID'"
+        $SafeID = ConvertTo-CIPPODataFilterValue -Value $ID -Type String
+        $Filter = "PartitionKey eq 'standards' and RowKey eq '$SafeID'"
         $ClearRow = Get-CIPPAzDataTableEntity @Table -Filter $Filter -Property PartitionKey, RowKey
         Remove-AzDataTableEntity -Force @Table -Entity $ClearRow
         Write-LogMessage -Headers $Headers -API $APIName -message "Removed standards for $ID." -Sev 'Info'
@@ -34,8 +33,7 @@ Function Invoke-RemoveStandard {
     }
 
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $body
         })

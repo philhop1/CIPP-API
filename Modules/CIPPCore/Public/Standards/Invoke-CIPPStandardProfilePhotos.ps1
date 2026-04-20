@@ -13,6 +13,8 @@ function Invoke-CIPPStandardProfilePhotos {
         CAT
             Global Standards
         TAG
+        EXECUTIVETEXT
+            Manages user profile photo permissions within Microsoft 365, allowing organizations to control whether employees can upload their own photos or require administrative approval. This helps maintain professional appearance standards and prevents inappropriate images in corporate directories.
         ADDEDCOMPONENT
             {"type":"autoComplete","multiple":false,"creatable":false,"label":"Select value","name":"standards.ProfilePhotos.state","options":[{"label":"Enabled","value":"enabled"},{"label":"Disabled","value":"disabled"}]}
         IMPACT
@@ -29,6 +31,11 @@ function Invoke-CIPPStandardProfilePhotos {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'ProfilePhotos' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
     # Get state value using null-coalescing operator
     $StateValue = $Settings.state.value ?? $Settings.state
@@ -36,15 +43,21 @@ function Invoke-CIPPStandardProfilePhotos {
     # Input validation
     if ([string]::IsNullOrWhiteSpace($StateValue)) {
         Write-LogMessage -API 'Standards' -tenant $tenant -message 'ProfilePhotos: Invalid state parameter set' -sev Error
-        Return
+        return
     }
 
     # true if wanted state is enabled, false if disabled
     $DesiredState = $StateValue -eq 'enabled'
 
     # Get current Graph policy state
-    $Uri = 'https://graph.microsoft.com/beta/admin/people/photoUpdateSettings'
-    $CurrentGraphState = New-GraphGetRequest -uri $Uri -tenantid $Tenant
+    try {
+        $Uri = 'https://graph.microsoft.com/beta/admin/people/photoUpdateSettings'
+        $CurrentGraphState = New-GraphGetRequest -uri $Uri -tenantid $Tenant
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the ProfilePhotos state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
     $UsersCanChangePhotos = if ([string]::IsNullOrWhiteSpace($CurrentGraphState.allowedRoles) ) { $true } else { $false }
     $GraphStateCorrect = $UsersCanChangePhotos -eq $DesiredState
 
@@ -61,20 +74,15 @@ function Invoke-CIPPStandardProfilePhotos {
     $CurrentStatesCorrect = $GraphStateCorrect -eq $true -and $OWAStateCorrect -eq $true
 
     if ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
-
         if ($CurrentStatesCorrect -eq $false) {
-            Write-Host 'Settings are not correct'
             try {
                 if ($StateValue -eq 'enabled') {
-                    Write-Host 'Enabling'
                     # Enable photo updates
                     $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-OwaMailboxPolicy' -cmdParams @{Identity = $CurrentOWAState.Identity; SetPhotoEnabled = $true } -useSystemMailbox $true
                     $null = New-GraphPostRequest -uri $Uri -tenant $Tenant -type DELETE -AsApp $true
                     Write-LogMessage -API 'Standards' -tenant $Tenant -message "Set Profile photo settings to $StateValue" -sev Info
 
                 } else {
-                    Write-Host 'Disabling'
                     # Disable photo updates
                     $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-OwaMailboxPolicy' -cmdParams @{Identity = $CurrentOWAState.Identity; SetPhotoEnabled = $false } -useSystemMailbox $true
 
@@ -94,7 +102,6 @@ function Invoke-CIPPStandardProfilePhotos {
                 Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to set profile photo settings to $StateValue. Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
             }
         } else {
-            Write-Host 'Settings are correct'
             Write-LogMessage -API 'Standards' -tenant $Tenant -message "Profile photo settings are already set to the desired state: $StateValue" -sev Info
         }
     }
@@ -118,6 +125,12 @@ function Invoke-CIPPStandardProfilePhotos {
                 GraphStateCorrect = $GraphStateCorrect
             }
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.ProfilePhotos' -FieldValue $FieldValue -Tenant $Tenant
+        $CurrentValue = @{
+            ProfilePhotosEnabled = $UsersCanChangePhotos
+        }
+        $ExpectedValue = @{
+            ProfilePhotosEnabled = $DesiredState
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.ProfilePhotos' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-ExecAddMultiTenantApp {
     <#
     .FUNCTIONALITY
@@ -8,11 +6,6 @@ function Invoke-ExecAddMultiTenantApp {
         Tenant.Application.ReadWrite
     #>
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     if ($Request.Body.configMode -eq 'manual') {
         $DelegateResources = $request.body.permissions | Where-Object -Property origin -EQ 'Delegated' | ForEach-Object { @{ id = $_.id; type = 'Scope' } }
         $DelegateResourceAccess = @{ ResourceAppId = '00000003-0000-0000-c000-000000000000'; resourceAccess = $DelegateResources }
@@ -50,7 +43,7 @@ function Invoke-ExecAddMultiTenantApp {
                     Batch            = @($Batch)
                     SkipLog          = $true
                 }
-                $null = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+                $null = Start-CIPPOrchestrator -InputObject $InputObject
                 $Results = 'Deploying {0} to {1}, see the logbook for details' -f $Request.Body.AppId, ($Request.Body.tenantFilter.label -join ', ')
             } catch {
                 $ErrorMsg = Get-NormalizedError -message $($_.Exception.Message)
@@ -88,7 +81,7 @@ function Invoke-ExecAddMultiTenantApp {
                 Batch            = @($Batch)
                 SkipLog          = $true
             }
-            $null = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
+            $null = Start-CIPPOrchestrator -InputObject $InputObject
             $Results = 'Deploying {0} to {1}, see the logbook for details' -f $Request.Body.selectedTemplate.label, ($Request.Body.tenantFilter.label -join ', ')
         } catch {
             $Results = "Error queuing application - $($_.Exception.Message)"
@@ -96,8 +89,7 @@ function Invoke-ExecAddMultiTenantApp {
         $StatusCode = [HttpStatusCode]::OK
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @{ Results = @($Results) }
         })

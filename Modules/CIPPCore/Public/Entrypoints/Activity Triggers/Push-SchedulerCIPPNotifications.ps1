@@ -106,18 +106,21 @@ function Push-SchedulerCIPPNotifications {
     try {
         Write-Information $($config | ConvertTo-Json)
         Write-Information $config.webhook
-        if ($Config.webhook -ne '' -and $null) {
+        if (![string]::IsNullOrEmpty($config.webhook)) {
             if ($Currentlog) {
                 $JSONContent = $Currentlog | ConvertTo-Json -Compress
-                Send-CIPPAlert -Type 'webhook' -JSONContent $JSONContent -TenantFilter $Tenant -APIName 'Alerts'
+                $Title = "Logbook Notification: Alerts found starting at $((Get-Date).AddMinutes(-15))"
+                Send-CIPPAlert -Type 'webhook' -Title $Title -JSONContent $JSONContent -TenantFilter $Tenant -APIName 'Alerts' -SchemaSource 'Logbook Notification' -InvokingCommand 'Push-SchedulerCIPPNotifications' -UseStandardizedSchema:$([boolean]$Config.UseStandardizedSchema)
                 $UpdateLogs = $CurrentLog | ForEach-Object { $_.sentAsAlert = $true; $_ }
                 if ($UpdateLogs) { Add-CIPPAzDataTableEntity @Table -Entity $UpdateLogs -Force }
             }
 
             if ($CurrentStandardsLogs) {
+                $Data = $CurrentStandardsLogs
                 $JSONContent = New-CIPPAlertTemplate -Data $Data -Format 'json' -InputObject 'table' -CIPPURL $CIPPURL
                 $CurrentStandardsLogs | ConvertTo-Json -Compress
-                Send-CIPPAlert -Type 'webhook' -JSONContent $JSONContent -TenantFilter $Tenant -APIName 'Alerts'
+                $Title = "Standards Notification: Out of sync standards detected"
+                Send-CIPPAlert -Type 'webhook' -Title $Title -JSONContent $JSONContent -TenantFilter $Tenant -APIName 'Alerts' -SchemaSource 'Standards Notification' -InvokingCommand 'Push-SchedulerCIPPNotifications' -UseStandardizedSchema:$([boolean]$Config.UseStandardizedSchema)
                 $updateStandards = $CurrentStandardsLogs | ForEach-Object {
                     if ($_.PSObject.Properties.Name -contains 'sentAsAlert') {
                         $_.sentAsAlert = $true

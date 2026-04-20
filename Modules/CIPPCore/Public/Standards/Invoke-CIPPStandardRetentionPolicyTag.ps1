@@ -13,6 +13,9 @@ function Invoke-CIPPStandardRetentionPolicyTag {
         CAT
             Exchange Standards
         TAG
+            "CIS M365 5.0 (6.4.1)"
+        EXECUTIVETEXT
+            Automatically and permanently removes deleted emails after a specified number of days, helping manage storage costs and ensuring compliance with data retention policies. This prevents accumulation of unnecessary deleted items while maintaining a reasonable recovery window for accidentally deleted emails.
         ADDEDCOMPONENT
             {"type":"number","name":"standards.RetentionPolicyTag.AgeLimitForRetention","label":"Retention Days","required":true}
         IMPACT
@@ -29,24 +32,36 @@ function Invoke-CIPPStandardRetentionPolicyTag {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'RetentionPolicyTag' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
 
     $PolicyName = 'CIPP Deleted Items'
-    $CurrentState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-RetentionPolicyTag' |
-    Where-Object -Property Identity -EQ $PolicyName
 
-    $PolicyState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-RetentionPolicy' |
-    Where-Object -Property Identity -EQ 'Default MRM Policy'
+    try {
+        $CurrentState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-RetentionPolicyTag' |
+            Where-Object -Property Identity -EQ $PolicyName
+
+        $PolicyState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-RetentionPolicy' |
+            Where-Object -Property Identity -EQ 'Default MRM Policy'
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the RetentionPolicy state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
+
+    $CurrentAgeLimitForRetention = ([timespan]$CurrentState.AgeLimitForRetention).TotalDays
 
     $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
     ($CurrentState.RetentionEnabled -eq $true) -and
     ($CurrentState.RetentionAction -eq 'PermanentlyDelete') -and
-    ($CurrentState.AgeLimitForRetention -eq ([timespan]::FromDays($Settings.AgeLimitForRetention))) -and
+    ($CurrentAgeLimitForRetention -eq $Settings.AgeLimitForRetention) -and
     ($CurrentState.Type -eq 'DeletedItems') -and
     ($PolicyState.RetentionPolicyTagLinks -contains $PolicyName)
 
     if ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
-
         if ($StateIsCorrect -eq $true) {
             Write-LogMessage -API 'Standards' -tenant $Tenant -message 'Retention policy tag already correctly configured' -sev Info
         } else {
@@ -109,12 +124,22 @@ function Invoke-CIPPStandardRetentionPolicyTag {
     if ($Settings.report -eq $true) {
         Add-CIPPBPAField -FieldName 'RetentionPolicy' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $tenant
 
-        if ($StateIsCorrect) {
-            $FieldValue = $true
-        } else {
-            $FieldValue = @{ CurrentState = $CurrentState; PolicyState = $PolicyState }
-        }
-        Set-CIPPStandardsCompareField -FieldName 'standards.RetentionPolicyTag' -FieldValue $FieldValue -Tenant $Tenant
-    }
+        $CurrentValue = @{
+            retentionEnabled     = $CurrentState.RetentionEnabled
+            retentionAction      = $CurrentState.RetentionAction
+            ageLimitForRetention = $CurrentAgeLimitForRetention
+            type                 = $CurrentState.Type
+            policyTagLinked      = $PolicyState.RetentionPolicyTagLinks -contains $PolicyName
 
+        }
+        $ExpectedValue = @{
+            retentionEnabled     = $true
+            retentionAction      = 'PermanentlyDelete'
+            ageLimitForRetention = $Settings.AgeLimitForRetention
+            type                 = 'DeletedItems'
+            policyTagLinked      = $true
+        }
+
+        Set-CIPPStandardsCompareField -FieldName 'standards.RetentionPolicyTag' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
+    }
 }

@@ -13,7 +13,7 @@ function Push-DomainAnalyserDomain {
         $Filter = "PartitionKey eq 'Domains' and RowKey eq 'Domains'"
         $Config = Get-CIPPAzDataTableEntity @ConfigTable -Filter $Filter
 
-        $ValidResolvers = @('Google', 'CloudFlare', 'Quad9')
+        $ValidResolvers = @('Google', 'CloudFlare')
         if ($ValidResolvers -contains $Config.Resolver) {
             $Resolver = $Config.Resolver
         } else {
@@ -39,31 +39,33 @@ function Push-DomainAnalyserDomain {
     }
 
     $Result = [PSCustomObject]@{
-        Tenant               = $Tenant.Tenant
-        TenantID             = $Tenant.TenantGUID
-        GUID                 = $($Domain.Replace('.', ''))
-        LastRefresh          = $(Get-Date (Get-Date).ToUniversalTime() -UFormat '+%Y-%m-%dT%H:%M:%S.000Z')
-        Domain               = $Domain
-        NSRecords            = (Read-NSRecord -Domain $Domain).Records
-        ExpectedSPFRecord    = ''
-        ActualSPFRecord      = ''
-        SPFPassAll           = ''
-        ActualMXRecords      = ''
-        MXPassTest           = ''
-        DMARCPresent         = ''
-        DMARCFullPolicy      = ''
-        DMARCActionPolicy    = ''
-        DMARCReportingActive = ''
-        DMARCPercentagePass  = ''
-        DNSSECPresent        = ''
-        MailProvider         = ''
-        DKIMEnabled          = ''
-        DKIMRecords          = ''
-        MSCNAMEDKIMSelectors = ''
-        Score                = ''
-        MaximumScore         = 160
-        ScorePercentage      = ''
-        ScoreExplanation     = ''
+        Tenant                 = $Tenant.Tenant
+        TenantID               = $Tenant.TenantGUID
+        GUID                   = $($Domain.Replace('.', ''))
+        LastRefresh            = $(Get-Date (Get-Date).ToUniversalTime() -UFormat '+%Y-%m-%dT%H:%M:%S.000Z')
+        Domain                 = $Domain
+        NSRecords              = (Read-NSRecord -Domain $Domain).Records
+        ExpectedSPFRecord      = ''
+        ActualSPFRecord        = ''
+        SPFPassAll             = ''
+        ActualMXRecords        = ''
+        MXPassTest             = ''
+        DMARCPresent           = ''
+        DMARCFullPolicy        = ''
+        DMARCActionPolicy      = ''
+        DMARCReportingActive   = ''
+        DMARCPercentagePass    = ''
+        DNSSECPresent          = ''
+        MailProvider           = ''
+        DKIMEnabled            = ''
+        DKIMRecords            = ''
+        MSCNAMEDKIMSelectors   = ''
+        EnterpriseEnrollment   = ''
+        EnterpriseRegistration = ''
+        Score                  = ''
+        MaximumScore           = 160
+        ScorePercentage        = ''
+        ScoreExplanation       = ''
     }
 
     $Scores = [PSCustomObject]@{
@@ -83,7 +85,7 @@ function Push-DomainAnalyserDomain {
     # Setup Score Explanation
     $ScoreExplanation = [System.Collections.Generic.List[string]]::new()
 
-    # Check MX Record
+    #Region MX Check
     $MXRecord = Read-MXRecord -Domain $Domain -ErrorAction Stop
 
     $Result.ExpectedSPFRecord = $MXRecord.ExpectedInclude
@@ -106,8 +108,9 @@ function Push-DomainAnalyserDomain {
     } else {
         $Result.MailProvider = $MXRecord.MailProvider.Name
     }
+    #EndRegion MX Check
 
-    # Get SPF Record
+    #Region SPF Check
     try {
         $SPFRecord = Read-SpfRecord -Domain $Domain -ErrorAction Stop
         if ($SPFRecord.RecordCount -gt 0) {
@@ -126,12 +129,11 @@ function Push-DomainAnalyserDomain {
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
     }
 
-    # Check SPF Record
-    $Result.SPFPassAll = $false
 
     # Check warning + fail counts to ensure all tests pass
     #$SPFWarnCount = $SPFRecord.ValidationWarns | Measure-Object | Select-Object -ExpandProperty Count
     $SPFFailCount = $SPFRecord.ValidationFails | Measure-Object | Select-Object -ExpandProperty Count
+    $Result.SPFPassAll = $false
 
     if ($SPFFailCount -eq 0) {
         $ScoreDomain += $Scores.SPFCorrectAll
@@ -139,12 +141,13 @@ function Push-DomainAnalyserDomain {
     } else {
         $ScoreExplanation.Add('SPF record did not pass validation') | Out-Null
     }
+    #EndRegion SPF Check
 
-    # Get DMARC Record
+    #Region DMARC Check
     try {
         $DMARCPolicy = Read-DmarcPolicy -Domain $Domain -ErrorAction Stop
 
-        If ([string]::IsNullOrEmpty($DMARCPolicy.Record)) {
+        if ([string]::IsNullOrEmpty($DMARCPolicy.Record)) {
             $Result.DMARCPresent = $false
             $ScoreExplanation.Add('No DMARC Records Found') | Out-Null
         } else {
@@ -188,8 +191,9 @@ function Push-DomainAnalyserDomain {
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
         #return $Message
     }
+    #EndRegion DMARC Check
 
-    # DNS Sec Check
+    #Region DNS Sec Check
     try {
         $DNSSECResult = Test-DNSSEC -Domain $Domain -ErrorAction Stop
         $DNSSECFailCount = $DNSSECResult.ValidationFails | Measure-Object | Select-Object -ExpandProperty Count
@@ -206,8 +210,9 @@ function Push-DomainAnalyserDomain {
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
         #return $Message
     }
+    #EndRegion DNS Sec Check
 
-    # DKIM Check
+    #Region DKIM Check
     try {
         $DkimParams = @{
             Domain                       = $Domain
@@ -241,7 +246,54 @@ function Push-DomainAnalyserDomain {
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message $Message -LogData (Get-CippException -Exception $_) -sev Error
         #return $Message
     }
+    #EndRegion DKIM Check
 
+    #Region Intune Enrollment CNAME Check
+    try {
+        # Check enterpriseenrollment CNAME
+        $EnrollmentResult = Resolve-DnsHttpsQuery -Domain "enterpriseenrollment.$Domain" -RecordType CNAME
+        if ($EnrollmentResult.Answer) {
+            $EnrollmentCNAME = ($EnrollmentResult.Answer | Where-Object { $_.type -eq 5 }).data -replace '\.$'
+            if ($EnrollmentCNAME -eq 'enterpriseenrollment-s.manage.microsoft.com') {
+                $Result.EnterpriseEnrollment = 'Correct'
+            } elseif ($EnrollmentCNAME -eq 'enterpriseenrollment.manage.microsoft.com') {
+                $Result.EnterpriseEnrollment = 'Legacy'
+                $ScoreExplanation.Add('Enterprise Enrollment CNAME points to legacy endpoint (enterpriseenrollment.manage.microsoft.com)') | Out-Null
+            } else {
+                $Result.EnterpriseEnrollment = "Unexpected: $EnrollmentCNAME"
+                $ScoreExplanation.Add('Enterprise Enrollment CNAME points to unexpected target') | Out-Null
+            }
+        } else {
+            $Result.EnterpriseEnrollment = 'No CNAME'
+            $ScoreExplanation.Add('No Enterprise Enrollment CNAME record found') | Out-Null
+        }
+    } catch {
+        $Result.EnterpriseEnrollment = 'Error'
+        Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "Enterprise Enrollment CNAME error for $Domain" -LogData (Get-CippException -Exception $_) -sev Error
+    }
+
+    try {
+        # Check enterpriseregistration CNAME
+        $RegistrationResult = Resolve-DnsHttpsQuery -Domain "enterpriseregistration.$Domain" -RecordType CNAME
+        if ($RegistrationResult.Answer) {
+            $RegistrationCNAME = ($RegistrationResult.Answer | Where-Object { $_.type -eq 5 }).data -replace '\.$'
+            if ($RegistrationCNAME -eq 'enterpriseregistration.windows.net') {
+                $Result.EnterpriseRegistration = 'Correct'
+            } else {
+                $Result.EnterpriseRegistration = "Unexpected: $RegistrationCNAME"
+                $ScoreExplanation.Add('Enterprise Registration CNAME points to unexpected target') | Out-Null
+            }
+        } else {
+            $Result.EnterpriseRegistration = 'No CNAME'
+            $ScoreExplanation.Add('No Enterprise Registration CNAME record found') | Out-Null
+        }
+    } catch {
+        $Result.EnterpriseRegistration = 'Error'
+        Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "Enterprise Registration CNAME error for $Domain" -LogData (Get-CippException -Exception $_) -sev Error
+    }
+    #EndRegion Intune Enrollment CNAME Check
+
+    #Region MSCNAME DKIM Records
     # Get Microsoft DKIM CNAME selector Records
     # Ugly, but i needed to create a scope/loop i could break out of without breaking the rest of the function
     foreach ($d in $Domain) {
@@ -250,7 +302,7 @@ function Push-DomainAnalyserDomain {
             if ($Result.DKIMEnabled -eq $true) {
                 continue
             }
-            # Test if its a onmicrosft.com domain, skip domain if it is
+            # Test if its a onmicrosoft.com domain, skip domain if it is
             if ($Domain -match 'onmicrosoft.com') {
                 continue
             }
@@ -264,27 +316,20 @@ function Push-DomainAnalyserDomain {
                 }
             }
 
+            # Get the DKIM record from EXO. This is the only way to get the correct values for the MSCNAME records since the new format was introduced in May 2025.
+            $DKIM = (New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'Get-DkimSigningConfig' -Select 'Domain,Selector1CNAME,Selector2CNAME') | Where-Object { $_.Domain -eq $Domain }
 
-            # Compute the DKIM CNAME records from $Tenant.InitialDomainName according to this logic: https://learn.microsoft.com/en-us/defender-office-365/email-authentication-dkim-configure#syntax-for-dkim-cname-records
-            # Test if it has a - in the domain name
-            if ($Domain -like '*-*') {
-                Write-Information 'Domain has a - in it. Got to query EXO for the right values'
-                $DKIM = (New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'Get-DkimSigningConfig') | Where-Object { $_.Domain -eq $Domain } | Select-Object Domain, Selector1CNAME, Selector2CNAME
-
-                # If no DKIM signing record is found, create a new disabled one
-                if ($null -eq $DKIM) {
-                    Write-Information 'No DKIM record found in EXO - Creating new signing'
-                    $NewDKIMSigningRequest = New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'New-DkimSigningConfig' -cmdParams @{  KeySize = 2048; DomainName = $Domain; Enabled = $false }
-                    $Selector1Value = $NewDKIMSigningRequest.Selector1CNAME
-                    $Selector2Value = $NewDKIMSigningRequest.Selector2CNAME
-                } else {
-                    $Selector1Value = $DKIM.Selector1CNAME
-                    $Selector2Value = $DKIM.Selector2CNAME
-                }
+            # If no DKIM signing record is found, create a new disabled one
+            if ($null -eq $DKIM) {
+                Write-Information 'No DKIM record found in EXO - Creating new signing'
+                $NewDKIMSigningRequest = New-ExoRequest -tenantid $Tenant.Tenant -cmdlet 'New-DkimSigningConfig' -cmdParams @{  KeySize = 2048; DomainName = $Domain; Enabled = $false }
+                $Selector1Value = $NewDKIMSigningRequest.Selector1CNAME
+                $Selector2Value = $NewDKIMSigningRequest.Selector2CNAME
             } else {
-                $Selector1Value = "selector1-$($Domain -replace '\.', '-' )._domainkey.$($Tenant.InitialDomainName)"
-                $Selector2Value = "selector2-$($Domain -replace '\.', '-' )._domainkey.$($Tenant.InitialDomainName)"
+                $Selector1Value = $DKIM.Selector1CNAME
+                $Selector2Value = $DKIM.Selector2CNAME
             }
+
 
             # Create the MSCNAME object
             $MSCNAMERecords = [PSCustomObject]@{
@@ -304,7 +349,7 @@ function Push-DomainAnalyserDomain {
             Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "MS CNAME DKIM error: $($ErrorMessage.NormalizedError)" -LogData $ErrorMessage -sev Error
         }
     }
-
+    #EndRegion MSCNAME DKIM Records
     # Final Score
     $Result.Score = $ScoreDomain
     $Result.ScorePercentage = [int](($Result.Score / $Result.MaximumScore) * 100)
@@ -322,11 +367,8 @@ function Push-DomainAnalyserDomain {
         $DomainTable.Entity = $DomainObject
         $DomainTable.Force = $true
         Add-CIPPAzDataTableEntity @DomainTable -Entity $DomainObject -Force
-
-        # Final Write to Output
-        Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "DNS Analyser Finished For $Domain" -sev Info
     } catch {
         Write-LogMessage -API 'DomainAnalyser' -tenant $DomainObject.TenantId -message "Error saving domain $Domain to table " -sev Error -LogData (Get-CippException -Exception $_)
     }
-    return $null
+    return $Result
 }

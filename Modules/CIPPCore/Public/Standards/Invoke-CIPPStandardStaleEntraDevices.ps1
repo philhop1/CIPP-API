@@ -13,11 +13,15 @@ function Invoke-CIPPStandardStaleEntraDevices {
         CAT
             Entra (AAD) Standards
         TAG
-            "CIS"
+            "Essential 8 (1501)"
+            "NIST CSF 2.0 (ID.AM-08)"
+            "NIST CSF 2.0 (PR.PS-03)"
+        EXECUTIVETEXT
+            Automatically identifies and removes inactive devices that haven't connected to company systems for a specified period, reducing security risks from abandoned or lost devices. This maintains a clean device inventory and prevents potential unauthorized access through dormant device registrations.
         ADDEDCOMPONENT
             {"type":"number","name":"standards.StaleEntraDevices.deviceAgeThreshold","label":"Days before stale(Do not set below 30)"}
         DISABLEDFEATURES
-            {"report":false,"warn":false,"remediate":true}
+            {"report":false,"warn":false,"remediate":false}
         IMPACT
             High Impact
         ADDEDDATE
@@ -32,15 +36,26 @@ function Invoke-CIPPStandardStaleEntraDevices {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'StaleEntraDevices' -TenantFilter $Tenant -RequiredCapabilities @('INTUNE_A', 'MDM_Services', 'EMS', 'SCCM', 'MICROSOFTINTUNEPLAN1')
 
     # Get all Entra devices
-    $AllDevices = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/devices' -tenantid $Tenant | Where-Object { $null -ne $_.approximateLastSignInDateTime }
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    try {
+        $AllDevices = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/devices?$select=id,displayName,approximateLastSignInDateTime,accountEnabled,enrollmentProfileName,operatingSystem,managementType,profileType' -tenantid $Tenant | Where-Object { $null -ne $_.approximateLastSignInDateTime }
+    } catch {
+        $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+        Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the StaleEntraDevices state for $Tenant. Error: $ErrorMessage" -Sev Error
+        return
+    }
+
     $Date = (Get-Date).AddDays( - [int]$Settings.deviceAgeThreshold)
     $StaleDevices = $AllDevices | Where-Object { $_.approximateLastSignInDateTime -lt $Date }
 
     if ($Settings.remediate -eq $true) {
-
-        Write-Host 'Remediation not implemented yet'
         # TODO: Implement remediation. For others in the future that want to try this:
         # Good MS guide on what to watch out for https://learn.microsoft.com/en-us/entra/identity/devices/manage-stale-devices#clean-up-stale-devices
         # https://learn.microsoft.com/en-us/graph/api/device-list?view=graph-rest-beta&tabs=http
@@ -76,9 +91,18 @@ function Invoke-CIPPStandardStaleEntraDevices {
 
         if ($StaleDevices.Count -gt 0) {
             $FieldValue = $StaleDevices | Select-Object -Property displayName, id, approximateLastSignInDateTime, accountEnabled, enrollmentProfileName, operatingSystem, managementType, profileType
-        } else {
-            $FieldValue = $true
         }
-        Set-CIPPStandardsCompareField -FieldName 'standards.StaleEntraDevices' -FieldValue $FieldValue -Tenant $Tenant
+
+        $CurrentValue = @{
+            StaleDevicesCount  = $StaleDevices.Count
+            StaleDevices       = ($FieldValue ? @($FieldValue) :@())
+            DeviceAgeThreshold = [int]$Settings.deviceAgeThreshold
+        }
+        $ExpectedValue = @{
+            StaleDevicesCount  = 0
+            StaleDevices       = @()
+            DeviceAgeThreshold = [int]$Settings.deviceAgeThreshold
+        }
+        Set-CIPPStandardsCompareField -FieldName 'standards.StaleEntraDevices' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
     }
 }

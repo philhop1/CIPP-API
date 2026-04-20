@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-ListUserMailboxDetails {
     <#
     .FUNCTIONALITY
@@ -9,15 +7,13 @@ function Invoke-ListUserMailboxDetails {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
-
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.tenantFilter
     $UserID = $Request.Query.UserID
+    $UserMail = $Request.Query.userMail
+    Write-Host "TenantFilter: $TenantFilter"
+    Write-Host "UserID: $UserID"
+    Write-Host "UserMail: $UserMail"
 
     try {
         $Requests = @(
@@ -53,7 +49,7 @@ function Invoke-ListUserMailboxDetails {
             @{
                 CmdletInput = @{
                     CmdletName = 'Get-BlockedSenderAddress'
-                    Parameters = @{ Identity = $UserID }
+                    Parameters = @{ SenderAddress = $UserMail }
                 }
             },
             @{
@@ -63,8 +59,7 @@ function Invoke-ListUserMailboxDetails {
                 }
             }
         )
-        Write-Host $UserID
-        $usernames = New-GraphGetRequest -tenantid $TenantFilter -uri 'https://graph.microsoft.com/beta/users?$select=id,userPrincipalName&$top=999'
+        $usernames = New-GraphGetRequest -tenantid $TenantFilter -uri 'https://graph.microsoft.com/beta/users?$select=id,userPrincipalName,displayName,mailNickname&$top=999'
         $Results = New-ExoBulkRequest -TenantId $TenantFilter -CmdletArray $Requests -returnWithCommand $true -Anchor $username
         Write-Host "First line of usernames is $($usernames[0] | ConvertTo-Json)"
 
@@ -105,9 +100,9 @@ function Invoke-ListUserMailboxDetails {
 
         # Determine if the user is blocked for spam
         if ($BlockedSender -and $BlockedSender.Count -gt 0) {
-            $BlockedForSpam = $false
-        } else {
             $BlockedForSpam = $true
+        } else {
+            $BlockedForSpam = $false
         }
     } catch {
         Write-Error "Failed Fetching Data $($_.Exception.message): $($_.InvocationInfo.ScriptLineNumber)"
@@ -115,7 +110,7 @@ function Invoke-ListUserMailboxDetails {
 
     # Parse permissions
 
-    #Implemented as an arraylist that uses .add().
+    #Implemented as an ArrayList that uses .add().
     $ParsedPerms = [System.Collections.ArrayList]::new()
     foreach ($PermSet in @($PermsRequest, $PermsRequest2)) {
         foreach ($Perm in $PermSet) {
@@ -144,21 +139,48 @@ function Invoke-ListUserMailboxDetails {
         $ParsedPerms = @()
     }
 
-    # Get forwarding address
-    $ForwardingAddress = if ($MailboxDetailedRequest.ForwardingAddress) {
-        try {
-            (New-GraphGetRequest -TenantId $TenantFilter -Uri "https://graph.microsoft.com/beta/users/$($MailboxDetailedRequest.ForwardingAddress)").UserPrincipalName
-        } catch {
-            try {
-                '{0} ({1})' -f $MailboxDetailedRequest.ForwardingAddress, (($((New-GraphGetRequest -TenantId $TenantFilter -Uri "https://graph.microsoft.com/beta/users?`$filter=displayName eq '$($MailboxDetailedRequest.ForwardingAddress)'") | Select-Object -First 1 -ExpandProperty UserPrincipalName)))
-            } catch {
-                $MailboxDetailedRequest.ForwardingAddress
+    # Get forwarding address - lazy load contacts only if needed
+    $ForwardingAddress = $null
+    if ($MailboxDetailedRequest.ForwardingSmtpAddress) {
+        # External forwarding
+        $ForwardingAddress = $MailboxDetailedRequest.ForwardingSmtpAddress -replace '^smtp:', ''
+    } elseif ($MailboxDetailedRequest.ForwardingAddress) {
+        # Internal forwarding
+        $rawAddress = $MailboxDetailedRequest.ForwardingAddress
+
+        if ($rawAddress -match '@') {
+            # Already an email address
+            $ForwardingAddress = $rawAddress
+        } else {
+            # First try users array
+            $matchedUser = $usernames | Where-Object {
+                $_.id -eq $rawAddress -or
+                $_.mailNickname -eq $rawAddress
+            }
+
+            if ($matchedUser) {
+                $ForwardingAddress = $matchedUser.userPrincipalName
+            } else {
+                # Query for the specific contact only
+                try {
+                    # Escape single quotes in the filter value
+                    $escapedAddress = $rawAddress -replace "'", "''"
+                    $escapedNickname = $rawAddress -replace "'", "''" -replace ' ', ''
+                    $filterQuery = "displayName eq '$escapedAddress' or mailNickname eq '$escapedNickname'"
+                    $contactUri = "https://graph.microsoft.com/beta/contacts?`$filter=$filterQuery&`$select=displayName,mail,mailNickname"
+
+                    $matchedContacts = New-GraphGetRequest -tenantid $TenantFilter -uri $contactUri
+
+                    if ($matchedContacts -and $matchedContacts.Count -gt 0) {
+                        $ForwardingAddress = $matchedContacts[0].mail
+                    } else {
+                        $ForwardingAddress = $rawAddress
+                    }
+                } catch {
+                    $ForwardingAddress = $rawAddress
+                }
             }
         }
-    } elseif ($MailboxDetailedRequest.ForwardingSmtpAddress -and $MailboxDetailedRequest.ForwardingAddress) {
-        "$($MailboxDetailedRequest.ForwardingAddress) $($MailboxDetailedRequest.ForwardingSmtpAddress)"
-    } else {
-        $MailboxDetailedRequest.ForwardingSmtpAddress
     }
 
     $ProhibitSendQuotaString = $MailboxDetailedRequest.ProhibitSendQuota -split ' '
@@ -177,7 +199,7 @@ function Invoke-ListUserMailboxDetails {
         $TotalArchiveItemCount = try { [math]::Round($ArchiveSizeRequest.ItemCount, 2) } catch { 0 }
     }
 
-    # Parse InPlaceHolds to determine hold types if avaliable
+    # Parse InPlaceHolds to determine hold types if available
     $InPlaceHold = $false
     $EDiscoveryHold = $false
     $PurviewRetentionHold = $false
@@ -240,6 +262,7 @@ function Invoke-ListUserMailboxDetails {
         AutoExpandingArchive     = $AutoExpandingArchiveEnabled
         RecipientTypeDetails     = $MailboxDetailedRequest.RecipientTypeDetails
         Mailbox                  = $MailboxDetailedRequest
+        RetentionPolicy          = $MailboxDetailedRequest.RetentionPolicy
         MailboxActionsData       = ($MailboxDetailedRequest | Select-Object id, ExchangeGuid, ArchiveGuid, WhenSoftDeleted,
             @{ Name = 'UPN'; Expression = { $_.'UserPrincipalName' } },
             @{ Name = 'displayName'; Expression = { $_.'DisplayName' } },
@@ -252,18 +275,19 @@ function Invoke-ListUserMailboxDetails {
             DeliverToMailboxAndForward,
             HiddenFromAddressListsEnabled,
             ExternalDirectoryObjectId,
+            IsDirSynced,
             MessageCopyForSendOnBehalfEnabled,
             MessageCopyForSentAsEnabled,
             LitigationHoldEnabled,
             LitigationHoldDate,
             LitigationHoldDuration,
-            @{ Name = 'LicensedForLitigationHold'; Expression = { ($_.PersistedCapabilities -contains 'BPOS_S_DlpAddOn' -or $_.PersistedCapabilities -contains 'BPOS_S_Enterprise') } },
+            @{ Name = 'LicensedForLitigationHold'; Expression = { ($_.PersistedCapabilities -contains 'EXCHANGE_S_ARCHIVE_ADDON' -or $_.PersistedCapabilities -contains 'BPOS_S_ArchiveAddOn' -or $_.PersistedCapabilities -contains 'EXCHANGE_S_ENTERPRISE' -or $_.PersistedCapabilities -contains 'BPOS_S_DlpAddOn' -or $_.PersistedCapabilities -contains 'BPOS_S_Enterprise') } },
             ComplianceTagHoldApplied,
             RetentionHoldEnabled,
             InPlaceHolds)
     } # Select statement taken from ListMailboxes to save a EXO request. If updated here, update in ListMailboxes as well.
 
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = @($GraphRequest)
         })

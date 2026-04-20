@@ -1,23 +1,24 @@
-using namespace System.Net
-
 function Invoke-ExecOnboardTenant {
     <#
     .FUNCTIONALITY
-        Entrypoint
+        Entrypoint,AnyTenant
     .ROLE
         Tenant.Administration.ReadWrite
     #>
     param($Request, $TriggerMetadata)
 
-    $APIName = 'ExecOnboardTenant'
-    Write-LogMessage -headers $Request.Headers -API $APINAME -message 'Accessed this API' -Sev 'Debug'
+    $APIName = $Request.Params.CIPPEndpoint
+    $Headers = $Request.Headers
+
+
+    # Interact with query parameters or the body of the request.
     $Id = $Request.Body.id
     if ($Id) {
         try {
             $OnboardTable = Get-CIPPTable -TableName 'TenantOnboarding'
-
+            $SafeId = ConvertTo-CIPPODataFilterValue -Value $Id -Type String
             if ($Request.Body.Cancel -eq $true) {
-                $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$Id'"
+                $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$SafeId'"
                 if ($TenantOnboarding) {
                     Remove-AzDataTableEntity -Force @OnboardTable -Entity $TenantOnboarding
                     $Results = @{'Results' = 'Onboarding job canceled' }
@@ -28,7 +29,7 @@ function Invoke-ExecOnboardTenant {
                 }
             } else {
                 $TenMinutesAgo = (Get-Date).AddMinutes(-10).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-                $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$Id' and Timestamp ge datetime'$TenMinutesAgo'"
+                $TenantOnboarding = Get-CIPPAzDataTableEntity @OnboardTable -Filter "RowKey eq '$SafeId' and Timestamp ge datetime'$TenMinutesAgo'"
                 if (!$TenantOnboarding -or [bool]$Request.Body.Retry) {
                     $OnboardingSteps = [PSCustomObject]@{
                         'Step1' = @{
@@ -59,7 +60,7 @@ function Invoke-ExecOnboardTenant {
                     }
                     $TenantOnboarding = [PSCustomObject]@{
                         PartitionKey    = 'Onboarding'
-                        RowKey          = [string]$Id
+                        RowKey          = [string]$SafeId
                         CustomerId      = ''
                         Status          = 'queued'
                         OnboardingSteps = [string](ConvertTo-Json -InputObject $OnboardingSteps -Compress)
@@ -71,7 +72,7 @@ function Invoke-ExecOnboardTenant {
 
                     $Item = [pscustomobject]@{
                         FunctionName               = 'ExecOnboardTenantQueue'
-                        id                         = $Id
+                        id                         = $SafeId
                         Roles                      = $Request.Body.gdapRoles
                         AddMissingGroups           = $Request.Body.addMissingGroups
                         IgnoreMissingRoles         = $Request.Body.ignoreMissingRoles
@@ -83,8 +84,8 @@ function Invoke-ExecOnboardTenant {
                         OrchestratorName = 'OnboardingOrchestrator'
                         Batch            = @($Item)
                     }
-                    $InstanceId = Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
-                    Write-LogMessage -headers $Request.Headers -API $APINAME -message "Onboarding job $Id started" -Sev 'Info' -LogData @{ 'InstanceId' = $InstanceId }
+                    $InstanceId = Start-CIPPOrchestrator -InputObject $InputObject
+                    Write-LogMessage -headers $Headers -API $APIName -message "Onboarding job $Id started" -Sev 'Info' -LogData @{ 'InstanceId' = $InstanceId }
                 }
 
                 $Steps = $TenantOnboarding.OnboardingSteps | ConvertFrom-Json
@@ -106,8 +107,7 @@ function Invoke-ExecOnboardTenant {
         $StatusCode = [HttpStatusCode]::NotFound
         $Results = 'Relationship not found'
     }
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $Results
         })

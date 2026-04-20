@@ -3,15 +3,10 @@ function Invoke-ListMailQuarantine {
     .FUNCTIONALITY
         Entrypoint
     .ROLE
-        Exchange.SpamFilter.ReadWrite
+        Exchange.SpamFilter.Read
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.tenantFilter
 
@@ -21,17 +16,16 @@ function Invoke-ListMailQuarantine {
         } else {
             $Table = Get-CIPPTable -TableName cacheQuarantineMessages
             $PartitionKey = 'QuarantineMessage'
-            $Filter = "PartitionKey eq '$PartitionKey'"
-            $Rows = Get-CIPPAzDataTableEntity @Table -filter $Filter | Where-Object -Property Timestamp -GT (Get-Date).AddMinutes(-30)
+            $30MinutesAgo = (Get-Date).AddMinutes(-30).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $Filter = "PartitionKey eq '$PartitionKey' and Timestamp gt datetime'$30MinutesAgo'"
+            $Rows = Get-CIPPAzDataTableEntity @Table -filter $Filter
             $QueueReference = '{0}-{1}' -f $TenantFilter, $PartitionKey
-            $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
+            $RunningQueue = Invoke-ListCippQueue -Reference $QueueReference | Where-Object { $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
             # If a queue is running, we will not start a new one
             if ($RunningQueue) {
                 $Metadata = [PSCustomObject]@{
                     QueueMessage = 'Still loading data for all tenants. Please check back in a few more minutes'
-                }
-                [PSCustomObject]@{
-                    Waiting = $true
+                    QueueId      = $RunningQueue.RowKey
                 }
             } elseif (!$Rows -and !$RunningQueue) {
                 # If no rows are found and no queue is running, we will start a new one
@@ -39,6 +33,7 @@ function Invoke-ListMailQuarantine {
                 $Queue = New-CippQueueEntry -Name 'Mail Quarantine - All Tenants' -Reference $QueueReference -TotalTasks ($TenantList | Measure-Object).Count
                 $Metadata = [PSCustomObject]@{
                     QueueMessage = 'Loading data for all tenants. Please check back in a few minutes'
+                    QueueId      = $Queue.RowKey
                 }
                 $InputObject = [PSCustomObject]@{
                     OrchestratorName = 'MailQuarantineOrchestrator'
@@ -52,13 +47,13 @@ function Invoke-ListMailQuarantine {
                     }
                     SkipLog          = $true
                 }
-                Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress)
-                [PSCustomObject]@{
-                    Waiting = $true
-                }
+                $null = Start-CIPPOrchestrator -InputObject $InputObject
             } else {
-                $messages = $Rows
-                foreach ($message in $messages) {
+                $Metadata = [PSCustomObject]@{
+                    QueueId = $RunningQueue.RowKey ?? $null
+                }
+                $Messages = $Rows
+                foreach ($message in $Messages) {
                     $messageObj = $message.QuarantineMessage | ConvertFrom-Json
                     $messageObj | Add-Member -NotePropertyName 'Tenant' -NotePropertyValue $message.Tenant -Force
                     $messageObj
@@ -80,8 +75,7 @@ function Invoke-ListMailQuarantine {
         }
     }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $body
         })

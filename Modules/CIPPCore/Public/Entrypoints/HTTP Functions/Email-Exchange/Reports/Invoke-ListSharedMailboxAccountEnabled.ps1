@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ListSharedMailboxAccountEnabled {
+function Invoke-ListSharedMailboxAccountEnabled {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -11,10 +9,6 @@ Function Invoke-ListSharedMailboxAccountEnabled {
     param($Request, $TriggerMetadata)
 
     $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
-
     $TenantFilter = $Request.Query.tenantFilter
 
     # Get Shared Mailbox Stuff
@@ -25,27 +19,28 @@ Function Invoke-ListSharedMailboxAccountEnabled {
             # Match the User
             $User = $AllUsersInfo | Where-Object { $_.userPrincipalName -eq $SharedMailbox.userPrincipalName } | Select-Object -First 1
 
-            if ($User) {
+            if ($User.accountEnabled) {
                 # Return all shared mailboxes with license information
                 [PSCustomObject]@{
-                    UserPrincipalName = $User.userPrincipalName
-                    displayName = $User.displayName
-                    givenName = $User.givenName
-                    surname = $User.surname
-                    accountEnabled = $User.accountEnabled
-                    assignedLicenses = $User.assignedLicenses
-                    id = $User.id
+                    UserPrincipalName     = $User.userPrincipalName
+                    displayName           = $User.displayName
+                    givenName             = $User.givenName
+                    surname               = $User.surname
+                    accountEnabled        = $User.accountEnabled
+                    assignedLicenses      = $User.assignedLicenses
+                    id                    = $User.id
                     onPremisesSyncEnabled = $User.onPremisesSyncEnabled
                 }
             }
         }
+        $StatusCode = [HttpStatusCode]::OK
     } catch {
-        Write-LogMessage -API 'Tenant' -tenant $TenantFilter -message "Shared Mailbox List on $($TenantFilter). Error: $($_.exception.message)" -sev 'Error'
+        $StatusCode = [HttpStatusCode]::InternalServerError
+        Write-LogMessage -API $APIName -tenant $TenantFilter -message "Shared Mailbox List on $($TenantFilter). Error: $($_.exception.message)" -sev 'Error'
     }
     $GraphRequest = $SharedMailboxDetails
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
-            StatusCode = [HttpStatusCode]::OK
+    return ([HttpResponseContext]@{
+            StatusCode = $StatusCode
             Body       = @($GraphRequest)
         })
 

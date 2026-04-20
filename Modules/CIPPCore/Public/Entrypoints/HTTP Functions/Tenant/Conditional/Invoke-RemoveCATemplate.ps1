@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-RemoveCATemplate {
+function Invoke-RemoveCATemplate {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -12,13 +10,14 @@ Function Invoke-RemoveCATemplate {
 
     $APIName = $Request.Params.CIPPEndpoint
     $Headers = $Request.Headers
-    Write-LogMessage -Headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
+
 
     $ID = $request.Query.ID ?? $Request.Body.ID
     try {
         $Table = Get-CippTable -tablename 'templates'
 
-        $Filter = "PartitionKey eq 'CATemplate' and RowKey eq '$ID'"
+        $SafeID = ConvertTo-CIPPODataFilterValue -Value $ID -Type String
+        $Filter = "PartitionKey eq 'CATemplate' and RowKey eq '$SafeID'"
         $ClearRow = Get-CIPPAzDataTableEntity @Table -Filter $Filter -Property PartitionKey, RowKey
         Remove-AzDataTableEntity -Force @Table -Entity $ClearRow
         $Result = "Removed Conditional Access Template with ID $ID"
@@ -32,8 +31,7 @@ Function Invoke-RemoveCATemplate {
     }
 
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = @{'Results' = $Result }
         })

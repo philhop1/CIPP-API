@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecIncidentsList {
+function Invoke-ExecIncidentsList {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -9,18 +7,27 @@ Function Invoke-ExecIncidentsList {
     #>
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
-
-    $APIName = $Request.Params.CIPPEndpoint
-    $Headers = $Request.Headers
-    Write-LogMessage -headers $Headers -API $APIName -message 'Accessed this API' -Sev 'Debug'
-
     # Interact with query parameters or the body of the request.
     $TenantFilter = $Request.Query.tenantFilter
+    $StartDate = $Request.Query.StartDate   # YYYYMMDD or null
+    $EndDate = $Request.Query.EndDate     # YYYYMMDD or null
+
+    # Build OData $filter parts for Graph API (single-tenant path)
+    $GraphFilterParts = [System.Collections.Generic.List[string]]::new()
+    if ($StartDate) {
+        $GraphFilterParts.Add("createdDateTime ge $([datetime]::ParseExact($StartDate,'yyyyMMdd',$null).ToString('yyyy-MM-ddT00:00:00Z'))")
+    }
+    if ($EndDate) {
+        $GraphFilterParts.Add("createdDateTime le $([datetime]::ParseExact($EndDate,'yyyyMMdd',$null).ToString('yyyy-MM-ddT23:59:59Z'))")
+    }
+    $GraphODataFilter = if ($GraphFilterParts.Count -gt 0) { '$filter=' + ($GraphFilterParts -join ' and ') } else { $null }
 
     try {
         $GraphRequest = if ($TenantFilter -ne 'AllTenants') {
             # Single tenant functionality
-            $Incidents = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/security/incidents' -tenantid $TenantFilter -AsApp $true
+            $IncidentsUri = 'https://graph.microsoft.com/beta/security/incidents'
+            if ($GraphODataFilter) { $IncidentsUri = "$IncidentsUri`?$GraphODataFilter" }
+            $Incidents = New-GraphGetRequest -uri $IncidentsUri -tenantid $TenantFilter -AsApp $true
 
             foreach ($incident in $Incidents) {
                 [PSCustomObject]@{
@@ -36,7 +43,7 @@ Function Invoke-ExecIncidentsList {
                     Classification = $incident.classification
                     Determination  = $incident.determination
                     Severity       = $incident.severity
-                    Tags           = ($IncidentObj.tags -join ', ')
+                    Tags           = ($incident.tags -join ', ')
                     Comments       = $incident.comments
                 }
             }
@@ -47,11 +54,12 @@ Function Invoke-ExecIncidentsList {
             $Filter = "PartitionKey eq '$PartitionKey'"
             $Rows = Get-CIPPAzDataTableEntity @Table -filter $Filter | Where-Object -Property Timestamp -GT (Get-Date).AddMinutes(-30)
             $QueueReference = '{0}-{1}' -f $TenantFilter, $PartitionKey
-            $RunningQueue = Invoke-ListCippQueue | Where-Object { $_.Reference -eq $QueueReference -and $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
+            $RunningQueue = Invoke-ListCippQueue -Reference $QueueReference | Where-Object { $_.Status -notmatch 'Completed' -and $_.Status -notmatch 'Failed' }
             # If a queue is running, we will not start a new one
             if ($RunningQueue) {
                 $Metadata = [PSCustomObject]@{
                     QueueMessage = 'Still loading data for all tenants. Please check back in a few more minutes'
+                    QueueId      = $RunningQueue.RowKey
                 }
             } elseif (!$Rows -and !$RunningQueue) {
                 # If no rows are found and no queue is running, we will start a new one
@@ -59,6 +67,7 @@ Function Invoke-ExecIncidentsList {
                 $Queue = New-CippQueueEntry -Name 'Incidents - All Tenants' -Link '/security/reports/incident-report?customerId=AllTenants' -Reference $QueueReference -TotalTasks ($TenantList | Measure-Object).Count
                 $Metadata = [PSCustomObject]@{
                     QueueMessage = 'Loading data for all tenants. Please check back in a few minutes'
+                    QueueId      = $Queue.RowKey
                 }
                 $InputObject = [PSCustomObject]@{
                     OrchestratorName = 'IncidentOrchestrator'
@@ -72,11 +81,25 @@ Function Invoke-ExecIncidentsList {
                     }
                     SkipLog          = $true
                 }
-                Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Depth 5 -Compress) | Out-Null
+                Start-CIPPOrchestrator -InputObject $InputObject | Out-Null
             } else {
+                $Metadata = [PSCustomObject]@{
+                    QueueId = $RunningQueue.RowKey ?? $null
+                }
                 $Incidents = $Rows
                 foreach ($incident in $Incidents) {
-                    $IncidentObj = $incident.Incident | ConvertFrom-Json
+                    if ($incident.Incident -and (Test-Json -Json $incident.Incident)) {
+                        $IncidentObj = $incident.Incident | ConvertFrom-Json
+                    } else {
+                        continue
+                    }
+                    try {
+                        $created = [datetime]::Parse($IncidentObj.createdDateTime)
+                        if ($StartDate -and $created -lt [datetime]::ParseExact($StartDate, 'yyyyMMdd', $null)) { continue }
+                        if ($EndDate -and $created -ge [datetime]::ParseExact($EndDate, 'yyyyMMdd', $null).AddDays(1)) { continue }
+                    } catch {
+                        continue
+                    }
                     [PSCustomObject]@{
                         Tenant         = $incident.Tenant
                         Id             = $IncidentObj.id
@@ -107,7 +130,7 @@ Function Invoke-ExecIncidentsList {
             Metadata = $Metadata
         }
     }
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = $StatusCode
             Body       = $Body
         })

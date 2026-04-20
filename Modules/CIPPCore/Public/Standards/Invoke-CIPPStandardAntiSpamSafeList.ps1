@@ -13,6 +13,9 @@ function Invoke-CIPPStandardAntiSpamSafeList {
         CAT
             Defender Standards
         TAG
+            "CIS M365 5.0 (2.1.13)"
+        EXECUTIVETEXT
+            Enables Microsoft's pre-approved list of trusted email servers to improve email delivery from legitimate sources while maintaining spam protection. This reduces false positives where legitimate emails might be blocked while still protecting against spam and malicious emails.
         ADDEDCOMPONENT
             {"type":"switch","name":"standards.AntiSpamSafeList.EnableSafeList","label":"Enable Safe List"}
         IMPACT
@@ -29,13 +32,18 @@ function Invoke-CIPPStandardAntiSpamSafeList {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'AntiSpamSafeList' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
+
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
     ##$Rerun -Type Standard -Tenant $Tenant -Settings $Settings 'AntiSpamSafeList'
 
     try {
         $State = [System.Convert]::ToBoolean($Settings.EnableSafeList)
     } catch {
         Write-LogMessage -API 'Standards' -tenant $Tenant -message 'AntiSpamSafeList: Failed to convert the EnableSafeList parameter to a boolean' -sev Error
-        Return
+        return
     }
 
     try {
@@ -43,18 +51,23 @@ function Invoke-CIPPStandardAntiSpamSafeList {
     } catch {
         $ErrorMessage = Get-CippException -Exception $_
         Write-LogMessage -API 'Standards' -tenant $Tenant -message "Failed to get the Anti-Spam Connection Filter Safe List. Error: $($ErrorMessage.NormalizedError)" -sev Error -LogData $ErrorMessage
-        Return
+        return
     }
     $WantedState = $State -eq $true ? $true : $false
     $StateIsCorrect = if ($CurrentState -eq $WantedState) { $true } else { $false }
+    $CurrentValue = [PSCustomObject]@{
+        EnableSafeList = $CurrentState
+    }
+    $ExpectedValue = [PSCustomObject]@{
+        EnableSafeList = $WantedState
+    }
 
     if ($Settings.report -eq $true) {
-        Set-CIPPStandardsCompareField -FieldName 'standards.AntiSpamSafeList' -FieldValue $StateIsCorrect -TenantFilter $Tenant
+        Set-CIPPStandardsCompareField -FieldName 'standards.AntiSpamSafeList' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -TenantFilter $Tenant
         Add-CIPPBPAField -FieldName 'AntiSpamSafeList' -FieldValue $CurrentState -StoreAs bool -Tenant $Tenant
     }
 
     if ($Settings.remediate -eq $true) {
-        Write-Host 'Time to remediate'
         if ($StateIsCorrect -eq $false) {
             try {
                 $null = New-ExoRequest -tenantid $Tenant -cmdlet 'Set-HostedConnectionFilterPolicy' -cmdParams @{

@@ -1,5 +1,3 @@
-using namespace System.Net
-
 function Invoke-ExecPartnerMode {
     <#
     .FUNCTIONALITY
@@ -38,10 +36,10 @@ function Invoke-ExecPartnerMode {
                 OrchestratorName = 'UpdateTenants'
                 SkipLog          = $true
             }
-            Start-NewOrchestration -FunctionName 'CIPPOrchestrator' -InputObject ($InputObject | ConvertTo-Json -Compress -Depth 5)
+            Start-CIPPOrchestrator -InputObject $InputObject
         }
 
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::OK
                 Body       = @{
                     results = @(
@@ -67,7 +65,7 @@ function Invoke-ExecPartnerMode {
             }
         }
 
-        Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+        return ([HttpResponseContext]@{
                 StatusCode = [HttpStatusCode]::OK
                 Body       = $CurrentState
             })

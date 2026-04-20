@@ -1,6 +1,4 @@
-using namespace System.Net
-
-Function Invoke-ExecEditMailboxPermissions {
+function Invoke-ExecEditMailboxPermissions {
     <#
     .FUNCTIONALITY
         Entrypoint
@@ -10,8 +8,12 @@ Function Invoke-ExecEditMailboxPermissions {
     [CmdletBinding()]
     param($Request, $TriggerMetadata)
 
+
+    # This endpoint is not called in the frontend at all. This can only be called manually via the scheduler, via the API, or via the CIPPAPIModule -Bobby
+
     $APIName = $Request.Params.CIPPEndpoint
-    Write-LogMessage -headers $Request.Headers -API $APINAME-message 'Accessed this API' -Sev 'Debug'
+    $Headers = $Request.Headers
+    Write-LogMessage -headers $Headers -API $APINAME-message 'Accessed this API' -Sev 'Debug'
     $Username = $request.body.userID
     $Tenantfilter = $request.body.tenantfilter
     if ($username -eq $null) { exit }
@@ -24,6 +26,9 @@ Function Invoke-ExecEditMailboxPermissions {
             $MailboxPerms = New-ExoRequest -Anchor $username -tenantid $Tenantfilter -cmdlet 'Remove-mailboxpermission' -cmdParams @{Identity = $userid; user = $RemoveUser; accessRights = @('FullAccess'); }
             $results.add("Removed $($removeuser) from $($username) Shared Mailbox permissions")
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Removed $($RemoveUser) from $($username) Shared Mailbox permission" -Sev 'Info' -tenant $TenantFilter
+
+            # Sync cache
+            Sync-CIPPMailboxPermissionCache -TenantFilter $TenantFilter -MailboxIdentity $username -User $RemoveUser -PermissionType 'FullAccess' -Action 'Remove'
         } catch {
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Could not remove mailbox permissions for $($removeuser) on $($username)" -Sev 'Error' -tenant $TenantFilter
             $results.add("Could not remove $($removeuser) shared mailbox permissions for $($username). Error: $($_.Exception.Message)")
@@ -37,6 +42,9 @@ Function Invoke-ExecEditMailboxPermissions {
             $results.add( "Granted $($UserAutomap) access to $($username) Mailbox with automapping")
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Granted $($UserAutomap) access to $($username) Mailbox with automapping" -Sev 'Info' -tenant $TenantFilter
 
+            # Sync cache
+            Sync-CIPPMailboxPermissionCache -TenantFilter $TenantFilter -MailboxIdentity $username -User $UserAutomap -PermissionType 'FullAccess' -Action 'Add'
+
         } catch {
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Could not add mailbox permissions for $($UserAutomap) on $($username)" -Sev 'Error' -tenant $TenantFilter
             $results.add( "Could not add $($UserAutomap) shared mailbox permissions for $($username). Error: $($_.Exception.Message)")
@@ -49,6 +57,9 @@ Function Invoke-ExecEditMailboxPermissions {
             $MailboxPerms = New-ExoRequest -Anchor $username -tenantid $Tenantfilter -cmdlet 'Add-MailboxPermission' -cmdParams @{Identity = $userid; user = $UserNoAutomap; accessRights = @('FullAccess'); automapping = $false }
             $results.add( "Granted $UserNoAutomap access to $($username) Mailbox without automapping")
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Granted $UserNoAutomap access to $($username) Mailbox without automapping" -Sev 'Info' -tenant $TenantFilter
+
+            # Sync cache
+            Sync-CIPPMailboxPermissionCache -TenantFilter $TenantFilter -MailboxIdentity $username -User $UserNoAutomap -PermissionType 'FullAccess' -Action 'Add'
         } catch {
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Could not add mailbox permissions for $($UserNoAutomap) on $($username)" -Sev 'Error' -tenant $TenantFilter
             $results.add("Could not add $($UserNoAutomap) shared mailbox permissions for $($username). Error: $($_.Exception.Message)")
@@ -62,6 +73,9 @@ Function Invoke-ExecEditMailboxPermissions {
             $MailboxPerms = New-ExoRequest -Anchor $username -tenantid $Tenantfilter -cmdlet 'Add-RecipientPermission' -cmdParams @{Identity = $userid; Trustee = $UserSendAs; accessRights = @('SendAs') }
             $results.add( "Granted $UserSendAs access to $($username) with Send As permissions")
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Granted $UserSendAs access to $($username) with Send As permissions" -Sev 'Info' -tenant $TenantFilter
+
+            # Sync cache
+            Sync-CIPPMailboxPermissionCache -TenantFilter $TenantFilter -MailboxIdentity $username -User $UserSendAs -PermissionType 'SendAs' -Action 'Add'
         } catch {
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Could not add mailbox permissions for $($UserSendAs) on $($username)" -Sev 'Error' -tenant $TenantFilter
             $results.add("Could not add $($UserSendAs) send-as permissions for $($username). Error: $($_.Exception.Message)")
@@ -75,6 +89,9 @@ Function Invoke-ExecEditMailboxPermissions {
             $MailboxPerms = New-ExoRequest -Anchor $username -tenantid $Tenantfilter -cmdlet 'Remove-RecipientPermission' -cmdParams @{Identity = $userid; Trustee = $UserSendAs; accessRights = @('SendAs') }
             $results.add( "Removed $UserSendAs from $($username) with Send As permissions")
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Removed $UserSendAs from $($username) with Send As permissions" -Sev 'Info' -tenant $TenantFilter
+
+            # Sync cache
+            Sync-CIPPMailboxPermissionCache -TenantFilter $TenantFilter -MailboxIdentity $username -User $UserSendAs -PermissionType 'SendAs' -Action 'Remove'
         } catch {
             Write-LogMessage -headers $Request.Headers -API $APINAME-message "Could not remove mailbox permissions for $($UserSendAs) on $($username)" -Sev 'Error' -tenant $TenantFilter
             $results.add("Could not remove $($UserSendAs) send-as permissions for $($username). Error: $($_.Exception.Message)")
@@ -109,8 +126,7 @@ Function Invoke-ExecEditMailboxPermissions {
 
     $body = [pscustomobject]@{'Results' = @($results) }
 
-    # Associate values to output bindings by calling 'Push-OutputBinding'.
-    Push-OutputBinding -Name Response -Value ([HttpResponseContext]@{
+    return ([HttpResponseContext]@{
             StatusCode = [HttpStatusCode]::OK
             Body       = $Body
         })

@@ -13,11 +13,13 @@ function Invoke-CIPPStandardSafeAttachmentPolicy {
         CAT
             Defender Standards
         TAG
-            "CIS"
+            "CIS M365 5.0 (2.1.4)"
             "mdo_safedocuments"
             "mdo_commonattachmentsfilter"
             "mdo_safeattachmentpolicy"
+            "NIST CSF 2.0 (DE.CM-09)"
         ADDEDCOMPONENT
+            {"type":"textField","name":"standards.SafeAttachmentPolicy.name","label":"Policy Name","required":true,"defaultValue":"CIPP Default Safe Attachment Policy"}
             {"type":"select","multiple":false,"label":"Safe Attachment Action","name":"standards.SafeAttachmentPolicy.SafeAttachmentAction","options":[{"label":"Allow","value":"Allow"},{"label":"Block","value":"Block"},{"label":"DynamicDelivery","value":"DynamicDelivery"}]}
             {"type":"select","multiple":false,"creatable":true,"label":"QuarantineTag","name":"standards.SafeAttachmentPolicy.QuarantineTag","options":[{"label":"AdminOnlyAccessPolicy","value":"AdminOnlyAccessPolicy"},{"label":"DefaultFullAccessPolicy","value":"DefaultFullAccessPolicy"},{"label":"DefaultFullAccessWithNotificationPolicy","value":"DefaultFullAccessWithNotificationPolicy"}]}
             {"type":"switch","label":"Redirect","name":"standards.SafeAttachmentPolicy.Redirect"}
@@ -37,30 +39,59 @@ function Invoke-CIPPStandardSafeAttachmentPolicy {
     #>
 
     param($Tenant, $Settings)
+    $TestResult = Test-CIPPStandardLicense -StandardName 'SafeAttachmentPolicy' -TenantFilter $Tenant -RequiredCapabilities @('EXCHANGE_S_STANDARD', 'EXCHANGE_S_ENTERPRISE', 'EXCHANGE_S_STANDARD_GOV', 'EXCHANGE_S_ENTERPRISE_GOV', 'EXCHANGE_LITE') #No Foundation because that does not allow powershell access
 
-    $ServicePlans = New-GraphGetRequest -uri 'https://graph.microsoft.com/beta/subscribedSkus?$select=servicePlans' -tenantid $Tenant
-    $ServicePlans = $ServicePlans.servicePlans.servicePlanName
-    $MDOLicensed = $ServicePlans -contains 'ATP_ENTERPRISE'
+    if ($TestResult -eq $false) {
+        return $true
+    } #we're done.
+
+    $TenantCapabilities = Get-CIPPTenantCapabilities -TenantFilter $Tenant
+    $MDOLicensed = $TenantCapabilities.ATP_ENTERPRISE -eq $true
 
     if ($MDOLicensed) {
-        $PolicyList = @('CIPP Default Safe Attachment Policy', 'Default Safe Attachment Policy')
-        $ExistingPolicy = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentPolicy' | Where-Object -Property Name -In $PolicyList
+        # Cache all Safe Attachment Policies to avoid duplicate API calls
+        try {
+            $AllSafeAttachmentPolicies = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentPolicy'
+        } catch {
+            $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the SafeAttachmentPolicy state for $Tenant. Error: $ErrorMessage" -Sev Error
+            return
+        }
+        # Cache all Safe Attachment Rules to avoid duplicate API calls
+        try {
+            $AllSafeAttachmentRule = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentRule'
+        } catch {
+            $ErrorMessage = Get-NormalizedError -Message $_.Exception.Message
+            Write-LogMessage -API 'Standards' -Tenant $Tenant -Message "Could not get the SafeAttachmentRule state for $Tenant. Error: $ErrorMessage" -Sev Error
+            return
+        }
+
+        # Use custom name if provided, otherwise use default for backward compatibility
+        $PolicyName = if ($Settings.name) { $Settings.name } else { 'CIPP Default Safe Attachment Policy' }
+        $PolicyList = @($PolicyName, 'CIPP Default Safe Attachment Policy', 'Default Safe Attachment Policy')
+        $ExistingPolicy = $AllSafeAttachmentPolicies | Where-Object -Property Name -In $PolicyList | Select-Object -First 1
         if ($null -eq $ExistingPolicy.Name) {
-            $PolicyName = $PolicyList[0]
+            # No existing policy - use the configured/default name
+            $PolicyName = if ($Settings.name) { $Settings.name } else { 'CIPP Default Safe Attachment Policy' }
         } else {
+            # Use existing policy name if found
             $PolicyName = $ExistingPolicy.Name
         }
-        $RuleList = @( 'CIPP Default Safe Attachment Rule', 'CIPP Default Safe Attachment Policy')
-        $ExistingRule = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentRule' | Where-Object -Property Name -In $RuleList
+        # Derive rule name from policy name, but check for old names for backward compatibility
+        $DesiredRuleName = "$PolicyName Rule"
+        $RuleList = @($DesiredRuleName, 'CIPP Default Safe Attachment Rule', 'CIPP Default Safe Attachment Policy')
+        $ExistingRule = $AllSafeAttachmentRule | Where-Object -Property Name -In $RuleList | Select-Object -First 1
         if ($null -eq $ExistingRule.Name) {
-            $RuleName = $RuleList[0]
+            # No existing rule - use the derived name
+            $RuleName = $DesiredRuleName
         } else {
+            # Use existing rule name if found
             $RuleName = $ExistingRule.Name
         }
 
-        $CurrentState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentPolicy' |
-        Where-Object -Property Name -EQ $PolicyName |
-        Select-Object Name, Enable, Action, QuarantineTag, Redirect, RedirectAddress
+        $CurrentState = $AllSafeAttachmentPolicies |
+            Where-Object -Property Name -EQ $PolicyName |
+            Select-Object Name, Enable, Action, QuarantineTag, Redirect, RedirectAddress
 
         $StateIsCorrect = ($CurrentState.Name -eq $PolicyName) -and
         ($CurrentState.Enable -eq $true) -and
@@ -71,7 +102,7 @@ function Invoke-CIPPStandardSafeAttachmentPolicy {
 
         $AcceptedDomains = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-AcceptedDomain'
 
-        $RuleState = New-ExoRequest -tenantid $Tenant -cmdlet 'Get-SafeAttachmentRule' |
+        $RuleState = $AllSafeAttachmentRule |
         Where-Object -Property Name -EQ $RuleName |
         Select-Object Name, SafeAttachmentPolicy, Priority, RecipientDomainIs
 
@@ -154,12 +185,25 @@ function Invoke-CIPPStandardSafeAttachmentPolicy {
 
         if ($Settings.report -eq $true) {
             Add-CIPPBPAField -FieldName 'SafeAttachmentPolicy' -FieldValue $StateIsCorrect -StoreAs bool -Tenant $tenant
-            if ($StateIsCorrect) {
-                $FieldValue = $true
-            } else {
-                $FieldValue = $CurrentState
+
+            $CurrentValue = @{
+                name            = $CurrentState.Name
+                enable          = $CurrentState.Enable
+                action          = $CurrentState.Action
+                quarantineTag   = $CurrentState.QuarantineTag
+                redirect        = $CurrentState.Redirect
+                redirectAddress = $CurrentState.RedirectAddress
             }
-            Set-CIPPStandardsCompareField -FieldName 'standards.SafeAttachmentPolicy' -FieldValue $FieldValue -Tenant $Tenant
+
+            $ExpectedValue = @{
+                name            = $PolicyName
+                enable          = $true
+                action          = $Settings.SafeAttachmentAction
+                quarantineTag   = $Settings.QuarantineTag
+                redirect        = $Settings.Redirect
+                redirectAddress = "$($Settings.RedirectAddress)"
+            }
+            Set-CIPPStandardsCompareField -FieldName 'standards.SafeAttachmentPolicy' -CurrentValue $CurrentValue -ExpectedValue $ExpectedValue -Tenant $Tenant
         }
     } else {
         if ($Settings.remediate -eq $true) {
